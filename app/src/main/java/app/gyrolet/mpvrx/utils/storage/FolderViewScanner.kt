@@ -27,6 +27,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.PriorityQueue
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Folder View Scanner - Optimized for folder list view
@@ -41,17 +42,20 @@ object FolderViewScanner {
     val folders: List<VideoFolder>,
     val createdAt: Long,
     val optionsKey: String,
+    val revision: Long,
   )
 
   // MediaStore is already invalidated by library events; keep it warm between screen visits.
   @Volatile
   private var folderCache: FolderCache? = null
+  private val cacheRevision = AtomicLong()
   private const val CACHE_TTL_MS = 5 * 60_000L
 
   /**
    * Clear cache (call when media library changes)
    */
   fun clearCache() {
+    cacheRevision.incrementAndGet()
     folderCache = null
   }
 
@@ -103,13 +107,17 @@ object FolderViewScanner {
     context: Context,
     options: MediaScanOptions = MediaScanOptions(),
     forceFileSystemCheck: Boolean = false,
+    onIndexedFolders: (suspend (List<VideoFolder>) -> Unit)? = null,
   ): List<VideoFolder> =
     withContext(Dispatchers.IO) {
       val now = System.currentTimeMillis()
+      val revision = cacheRevision.get()
 
       // Return cached data if still valid
       folderCache?.let { cached ->
-        if (!forceFileSystemCheck && now - cached.createdAt < CACHE_TTL_MS && cached.optionsKey == options.cacheKey) {
+        if (!forceFileSystemCheck && cached.revision == revision &&
+          now - cached.createdAt < CACHE_TTL_MS && cached.optionsKey == options.cacheKey) {
+          onIndexedFolders?.invoke(cached.folders)
           return@withContext cached.folders
         }
       }
@@ -123,6 +131,8 @@ object FolderViewScanner {
       if (options.includeAudio) {
         scanAudioMediaStoreImmediateChildren(context, allFolders, noMediaPathFilter, options)
       }
+      currentCoroutineContext().ensureActive()
+      onIndexedFolders?.invoke(toVideoFolders(allFolders.values))
       // MediaStore already covers indexed primary/removable media. Recursively walking every
       // filesystem root on each normal refresh defeats the cache and can block for minutes.
       // Keep the filesystem fallback for an empty/unindexed library and explicit forced checks;
@@ -136,25 +146,22 @@ object FolderViewScanner {
       }
 
       // Convert to VideoFolder list
-      val result =
-        allFolders.values
-          .map { data ->
-            VideoFolder(
-              bucketId = data.path,
-              name = data.name,
-              path = data.path,
-              videoCount = data.videoCount,
-              totalSize = data.totalSize,
-              totalDuration = data.totalDuration,
-              lastModified = data.lastModified,
-            )
-          }.sortedBy { it.name.lowercase(Locale.getDefault()) }
+      val result = toVideoFolders(allFolders.values)
 
       // Update cache
-      folderCache = FolderCache(result, now, options.cacheKey)
+      currentCoroutineContext().ensureActive()
+      if (cacheRevision.get() == revision) folderCache = FolderCache(result, now, options.cacheKey, revision)
 
       result
     }
+
+  private fun toVideoFolders(folders: Collection<FolderData>): List<VideoFolder> =
+    folders.map { data ->
+      VideoFolder(
+        bucketId = data.path, name = data.name, path = data.path, videoCount = data.videoCount,
+        totalSize = data.totalSize, totalDuration = data.totalDuration, lastModified = data.lastModified,
+      )
+    }.sortedBy { it.name.lowercase(Locale.getDefault()) }
 
   suspend fun getIndexedNoMediaFolders(
     options: MediaScanOptions,
@@ -1100,3 +1107,4 @@ object FolderViewScanner {
     }
   }
 }
+

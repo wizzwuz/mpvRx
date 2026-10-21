@@ -4,6 +4,11 @@ These notes are written in plain English and focus on what changed for real use.
 
 ## Unreleased
 
+### Media Refresh
+
+- **New videos appear sooner:** Library and Folder listings publish indexed rows before hidden-folder checks and metadata extraction. Refreshes keep up with ongoing imports, completed files in watched directories are indexed, and Tree updates avoid forced whole-storage walks.
+- **Reliable cache updates:** Folder snapshots carry their own MediaStore validation token, newly added folders bypass stale cached listings, and superseded scans cannot restore outdated playback rows or repopulate invalidated folder caches.
+
 ### Tree Browser
 
 - **Immediate file actions:** Deleting or moving files and folders updates Tree mode immediately; renames appear before storage work finishes. Failed or cancelled items return, successful changes remain applied through stale scans, and operation refreshes keep the current list on screen.

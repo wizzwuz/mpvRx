@@ -96,6 +96,7 @@ class FileSystemBrowserViewModel(
   private val itemChanges = MutableStateFlow<Map<String, ItemChange>>(emptyMap())
   private val changeRevision = AtomicLong()
   private var loadedDirectoryPath: String? = null
+  @Volatile private var directoryGeneration: String? = null
 
   // Sorted and filtered items ready for display
   // Similar to Fossify's final sorted items list
@@ -149,7 +150,7 @@ class FileSystemBrowserViewModel(
 
   fun startWatching() {
     watchActive = true
-    liveDirectoryWatcher.watch(_currentPath.value)
+    liveDirectoryWatcher.watch(_currentPath.value, getApplication())
   }
 
   fun stopWatching() {
@@ -203,7 +204,7 @@ class FileSystemBrowserViewModel(
 
     viewModelScope.launch {
       _currentPath.collect { path ->
-        if (watchActive) liveDirectoryWatcher.watch(path)
+        if (watchActive) liveDirectoryWatcher.watch(path, getApplication())
       }
     }
 
@@ -215,7 +216,10 @@ class FileSystemBrowserViewModel(
         // Drops the persisted tree snapshot too, so a mutation that did not move MediaStore's
         // generation (an in-app rename, a move, a new .nomedia folder) cannot be served from it.
         MediaStoreGenerationGuard.invalidate(getApplication())
-        loadCurrentDirectory(forceFileSystemCheck = true)
+        val previous = directoryGeneration
+        val indexedChanged = previous != null && !MediaStoreGenerationGuard.isTokenCurrent(getApplication(), previous)
+        // Indexed changes need a fresh query; unindexed/hidden changes still require verification.
+        loadCurrentDirectory(forceFileSystemCheck = !indexedChanged)
       }
     }
 
@@ -640,6 +644,9 @@ class FileSystemBrowserViewModel(
       // Don't reset the flag here - let navigation handle it
 
       try {
+        val observedGeneration = withContext(Dispatchers.IO) {
+          MediaStoreGenerationGuard.currentToken(getApplication())
+        }
         // Special case: Show storage roots at the special marker
         // Similar to Fossify's StoragePickerDialog logic
         if (path == STORAGE_ROOTS_MARKER) {
@@ -649,6 +656,7 @@ class FileSystemBrowserViewModel(
           ensureActive()
           _unsortedItems.value = roots
           loadedDirectoryPath = path
+          directoryGeneration = observedGeneration
           reconcileItemChanges(path, roots, scanRevision)
           _videoFilesWithPlayback.value = emptyMap()
           _newVideoIds.value = emptySet()
@@ -698,6 +706,7 @@ class FileSystemBrowserViewModel(
 
               _unsortedItems.value = items
               loadedDirectoryPath = path
+              directoryGeneration = observedGeneration
               reconcileItemChanges(path, items, scanRevision)
 
               val folderCount = items.filterIsInstance<FileSystemItem.Folder>().size
@@ -849,4 +858,5 @@ class FileSystemBrowserViewModel(
     }
   }
 }
+
 

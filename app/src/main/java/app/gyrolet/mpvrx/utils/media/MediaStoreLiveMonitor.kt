@@ -13,6 +13,7 @@ import app.gyrolet.mpvrx.utils.storage.MediaStoreGenerationGuard
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Foreground-only MediaStore observer. Reacts to indexed media changes without periodically
@@ -24,8 +25,13 @@ class MediaStoreLiveMonitor(
   private val scope: CoroutineScope,
 ) {
   private val handler = Handler(Looper.getMainLooper())
-  private val publish = Runnable { MediaLibraryEvents.notifyChanged() }
+  private val publishScheduled = AtomicBoolean(false)
+  private val publish = Runnable {
+    publishScheduled.set(false)
+    if (registered) MediaLibraryEvents.notifyChanged() else pendingRefresh = true
+  }
   private var registered = false
+  private var pendingRefresh = false
   private var lastGeneration: String? = null
   private val observer = object : ContentObserver(handler) {
     override fun onChange(selfChange: Boolean) = schedule()
@@ -33,8 +39,13 @@ class MediaStoreLiveMonitor(
   }
 
   private fun schedule() {
-    handler.removeCallbacks(publish)
-    handler.postDelayed(publish, 650L)
+    if (!registered) {
+      pendingRefresh = true
+      return
+    }
+    // A trailing debounce never fires while a downloader keeps adding/updating rows.
+    // Coalesce a bounded window instead, so an ongoing import can still become visible.
+    if (publishScheduled.compareAndSet(false, true)) handler.postDelayed(publish, 350L)
   }
 
   fun start() {
@@ -47,6 +58,10 @@ class MediaStoreLiveMonitor(
     } catch (error: Exception) {
       Log.w(TAG, "Could not register media observers", error)
       stop()
+    }
+    if (pendingRefresh) {
+      pendingRefresh = false
+      schedule()
     }
     val previous = lastGeneration
     scope.launch(Dispatchers.IO) {
@@ -67,9 +82,11 @@ class MediaStoreLiveMonitor(
     registered = false
     runCatching { context.contentResolver.unregisterContentObserver(observer) }
     handler.removeCallbacks(publish)
+    if (publishScheduled.getAndSet(false)) pendingRefresh = true
   }
 
   private companion object {
     const val TAG = "MediaStoreLiveMonitor"
   }
 }
+

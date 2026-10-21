@@ -188,6 +188,7 @@ object MediaFileRepository : KoinComponent {
     forceFileSystemCheck: Boolean = false,
     includeAudioOverride: Boolean? = null,
     scope: HiddenScanScope = HiddenScanScope.FOLDERS,
+    onIndexedFolders: (suspend (List<VideoFolder>) -> Unit)? = null,
   ): List<VideoFolder> =
     withContext(Dispatchers.IO) {
       val options = currentScanOptions(includeAudioOverride, scope)
@@ -196,6 +197,7 @@ object MediaFileRepository : KoinComponent {
           context = context,
           options = options,
           forceFileSystemCheck = forceFileSystemCheck,
+          onIndexedFolders = onIndexedFolders,
         )
       val scopedFolders = ScopedHiddenFolderScanner.withoutLocalDuplicates(
         folders,
@@ -482,10 +484,7 @@ object MediaFileRepository : KoinComponent {
             scope = scope,
           ).forEach { media ->
             // A granted document and its MediaStore row are the same file; key both by real path.
-            val key = if (BuildConfig.SCOPED_STORAGE_ONLY && ScopedHiddenFolderScanner.isScopedFolder(media.path)) {
-              ScopedHiddenFolderScanner.localPathOf(media.uri)?.let(::mediaPathKey)
-                ?: ScopedHiddenFolderScanner.documentKey(media.uri)
-            } else mediaPathKey(media.path) ?: media.path
+            val key = mediaIdentityKey(media)
             val existing = result[key]
             if (existing == null || shouldReplaceMedia(existing, media)) {
               result[key] = media
@@ -499,6 +498,24 @@ object MediaFileRepository : KoinComponent {
       }
       result.values.toList()
     }
+
+  private fun mediaIdentityKey(media: Video): String =
+    if (BuildConfig.SCOPED_STORAGE_ONLY && ScopedHiddenFolderScanner.isScopedFolder(media.path)) {
+      ScopedHiddenFolderScanner.localPathOf(media.uri)?.let(::mediaPathKey)
+        ?: ScopedHiddenFolderScanner.documentKey(media.uri)
+    } else mediaPathKey(media.path) ?: media.path
+
+  internal fun mergeVideos(vararg groups: List<Video>): List<Video> {
+    val result = linkedMapOf<String, Video>()
+    groups.forEach { videos ->
+      videos.forEach { video ->
+        val key = mediaIdentityKey(video)
+        val existing = result[key]
+        if (existing == null || shouldReplaceMedia(existing, video)) result[key] = video
+      }
+    }
+    return result.values.toList()
+  }
 
   private fun shouldReplaceMedia(
     existing: Video,
@@ -608,6 +625,9 @@ object MediaFileRepository : KoinComponent {
       val bucketIds = folders.map { it.bucketId }.toSet()
       getVideosForBuckets(context, bucketIds, includeAudioOverride, scope = HiddenScanScope.LIBRARY)
     }
+
+  suspend fun getIndexedVideos(context: Context, includeAudioOverride: Boolean? = null): List<Video> =
+    VideoScanUtils.getIndexedVideos(context, currentScanOptions(includeAudioOverride, HiddenScanScope.LIBRARY))
 
   // =============================================================================
   // FILE SYSTEM BROWSING (Tree View)
@@ -816,3 +836,4 @@ object MediaFileRepository : KoinComponent {
       roots
     }
 }
+

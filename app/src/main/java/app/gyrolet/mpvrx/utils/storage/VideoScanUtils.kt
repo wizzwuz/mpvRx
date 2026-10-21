@@ -63,6 +63,19 @@ object VideoScanUtils : KoinComponent {
   // Extensions where MediaStore duration is unreliable (returns 0)
   private val MEDIASTORE_DURATION_UNRELIABLE = setOf("ts", "mts", "m2ts")
 
+  /** Read indexed rows in bulk, without folder discovery or opening files for metadata. */
+  suspend fun getIndexedVideos(
+    context: Context,
+    options: MediaScanOptions = MediaScanOptions(),
+  ): List<Video> = withContext(Dispatchers.IO) {
+    val videos = linkedMapOf<String, Video>()
+    val filter = NoMediaPathFilter(options)
+    val keys = MediaPathKeyResolver()
+    scanVideosFromMediaStore(context, null, videos, filter, keys)
+    if (options.includeAudio) scanAudioFromMediaStore(context, null, videos, filter, options, keys)
+    videos.values.toList()
+  }
+
   /**
    * Get all videos in a specific folder
    * MediaStore first, filesystem fallback for external devices
@@ -137,7 +150,7 @@ object VideoScanUtils : KoinComponent {
    */
   private suspend fun scanVideosFromMediaStore(
     context: Context,
-    folderPath: String,
+    folderPath: String?,
     videosMap: MutableMap<String, Video>,
     noMediaPathFilter: NoMediaPathFilter,
     keyResolver: MediaPathKeyResolver,
@@ -155,10 +168,11 @@ object VideoScanUtils : KoinComponent {
         MediaStore.Video.Media.WIDTH,
         MediaStore.Video.Media.HEIGHT,
       )
-    val normalizedFolderPath = normalizeStoragePath(folderPath) ?: return
-    val normalizedFolderKey = storagePathKey(normalizedFolderPath) ?: return
-    val selection = DIRECT_CHILD_SELECTION.format(MediaStore.Video.Media.DATA)
-    val selectionArgs = directChildSelectionArgs(normalizedFolderKey)
+    val normalizedFolderPath = folderPath?.let(::normalizeStoragePath)
+    val normalizedFolderKey = normalizedFolderPath?.let(::storagePathKey)
+    if (folderPath != null && normalizedFolderKey == null) return
+    val selection = normalizedFolderKey?.let { DIRECT_CHILD_SELECTION.format(MediaStore.Video.Media.DATA) }
+    val selectionArgs = normalizedFolderKey?.let(::directChildSelectionArgs)
 
     try {
       var cursor: Cursor? = null
@@ -201,7 +215,7 @@ object VideoScanUtils : KoinComponent {
             if (!FileTypeUtils.isVideoFile(file)) continue
             // Only direct children
             val folder = folderResolver.resolve(file.parent) ?: continue
-            if (folder.key != normalizedFolderKey || folder.excluded) continue
+            if ((normalizedFolderKey != null && folder.key != normalizedFolderKey) || folder.excluded) continue
             if (!app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY && !existenceCache.exists(file)) continue
             val normalizedPath = normalizeStoragePath(path) ?: continue
 
@@ -242,8 +256,8 @@ object VideoScanUtils : KoinComponent {
                 dateModified = dateModified,
                 dateAdded = dateAdded,
                 mimeType = mimeType,
-                bucketId = normalizedFolderPath,
-                bucketDisplayName = leafStorageName(normalizedFolderPath),
+                bucketId = normalizedFolderPath ?: file.parent.orEmpty(),
+                bucketDisplayName = leafStorageName(normalizedFolderPath ?: file.parent.orEmpty()),
                 width = width,
                 height = height,
                 rotation = rotation,
@@ -263,7 +277,7 @@ object VideoScanUtils : KoinComponent {
 
   private suspend fun scanAudioFromMediaStore(
     context: Context,
-    folderPath: String,
+    folderPath: String?,
     videosMap: MutableMap<String, Video>,
     noMediaPathFilter: NoMediaPathFilter,
     options: MediaScanOptions,
@@ -281,9 +295,10 @@ object VideoScanUtils : KoinComponent {
         MediaStore.Audio.Media.DATE_ADDED,
         MediaStore.Audio.Media.MIME_TYPE,
       )
-    val normalizedFolderPath = normalizeStoragePath(folderPath) ?: return
-    val normalizedFolderKey = storagePathKey(normalizedFolderPath) ?: return
-    val selection = DIRECT_CHILD_SELECTION.format(MediaStore.Audio.Media.DATA)
+    val normalizedFolderPath = folderPath?.let(::normalizeStoragePath)
+    val normalizedFolderKey = normalizedFolderPath?.let(::storagePathKey)
+    if (folderPath != null && normalizedFolderKey == null) return
+    val selection = normalizedFolderKey?.let { DIRECT_CHILD_SELECTION.format(MediaStore.Audio.Media.DATA) }
 
     try {
       context.contentResolver
@@ -291,7 +306,7 @@ object VideoScanUtils : KoinComponent {
           MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
           projection,
           selection,
-          directChildSelectionArgs(normalizedFolderKey),
+          normalizedFolderKey?.let(::directChildSelectionArgs),
           "${MediaStore.Audio.Media.DISPLAY_NAME} ASC",
         )?.use { cursor ->
           val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
@@ -311,7 +326,7 @@ object VideoScanUtils : KoinComponent {
             val file = File(path)
             if (!FileTypeUtils.isAudioFile(file)) continue
             val folder = folderResolver.resolve(file.parent) ?: continue
-            if (folder.key != normalizedFolderKey || folder.excluded) continue
+            if ((normalizedFolderKey != null && folder.key != normalizedFolderKey) || folder.excluded) continue
             if (!app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY && !file.isFile) continue
             val duration = cursor.getLong(durationColumn)
             if (!options.includesAudioDuration(duration)) continue
@@ -336,8 +351,8 @@ object VideoScanUtils : KoinComponent {
                 dateAdded = cursor.getLong(addedColumn),
                 mimeType =
                   cursor.getString(mimeColumn) ?: FileTypeUtils.getMimeTypeFromExtension(file.extension),
-                bucketId = normalizedFolderPath,
-                bucketDisplayName = leafStorageName(normalizedFolderPath),
+                bucketId = normalizedFolderPath ?: file.parent.orEmpty(),
+                bucketDisplayName = leafStorageName(normalizedFolderPath ?: file.parent.orEmpty()),
                 width = 0,
                 height = 0,
                 fps = 0f,
@@ -859,3 +874,4 @@ object StorageVolumeUtils {
     }
   }
 }
+

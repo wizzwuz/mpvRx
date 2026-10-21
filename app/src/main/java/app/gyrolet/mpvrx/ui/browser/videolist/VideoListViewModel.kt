@@ -32,6 +32,7 @@ import app.gyrolet.mpvrx.utils.storage.FolderViewScanner
 import app.gyrolet.mpvrx.utils.storage.VideoScanUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
@@ -187,7 +188,7 @@ class VideoListViewModel(
 
   fun startWatching() {
     if (!ZipArchiveMedia.isBrowserPath(bucketId) && !ScopedHiddenFolderScanner.isScopedFolder(bucketId)) {
-      liveFolderWatcher.watch(bucketId)
+      liveFolderWatcher.watch(bucketId, getApplication())
     }
   }
 
@@ -275,6 +276,15 @@ class VideoListViewModel(
         }
         if (scopedFolder) {
           videoList = MetadataRetrieval.restoreCachedContentMetadata(videoList, metadataCache)
+        }
+
+        // Show new rows before opening every file for optional metadata. Keep the old listing
+        // during an empty-provider retry; metadata and playback chips can finish afterwards.
+        if (videoList.isNotEmpty()) {
+          ensureActive()
+          _videos.value = videoList
+          loadPlaybackInfo(videoList)
+          _isLoading.value = false
         }
 
         // ZIP entries need basic metadata even when optional metadata chips are disabled.
@@ -445,10 +455,12 @@ class VideoListViewModel(
 
   private suspend fun loadPlaybackInfo(videos: List<Video>) {
     val playbackByIdentifier = playbackStateRepository.getAllPlaybackStates().associateBy { it.mediaTitle }
+    currentCoroutineContext().ensureActive()
+    if (_videos.value != videos) return
     val watchedThreshold = browserPreferences.watchedThreshold.get()
     val newLabelDays = appearancePreferences.unplayedOldVideoDays.get()
     val now = System.currentTimeMillis()
-    playbackIndexByIdentifier =
+    val playbackIndex =
       buildMap(videos.size * 4) {
         videos.forEachIndexed { index, video ->
           videoPlaybackIdentifiers(video).forEach { identifier -> put(identifier, index) }
@@ -464,6 +476,9 @@ class VideoListViewModel(
           watchedThreshold = watchedThreshold,
         )
       }
+    currentCoroutineContext().ensureActive()
+    if (_videos.value != videos) return
+    playbackIndexByIdentifier = playbackIndex
     _videosWithPlaybackInfo.value = videosWithInfo
   }
 
@@ -476,6 +491,10 @@ class VideoListViewModel(
     val index = playbackIndexByIdentifier[mediaIdentifier] ?: return
     val videos = _videos.value
     val video = videos.getOrNull(index) ?: return
+    if (mediaIdentifier !in videoPlaybackIdentifiers(video)) {
+      loadPlaybackInfo(videos)
+      return
+    }
     val currentItems = _videosWithPlaybackInfo.value
     if (currentItems.size != videos.size || currentItems.getOrNull(index)?.video?.path != video.path) {
       loadPlaybackInfo(videos)
@@ -491,6 +510,8 @@ class VideoListViewModel(
         watchedThreshold = browserPreferences.watchedThreshold.get(),
       )
     if (currentItems[index] == updatedItem) return
+    currentCoroutineContext().ensureActive()
+    if (_videos.value != videos || _videosWithPlaybackInfo.value != currentItems) return
 
     _videosWithPlaybackInfo.value =
       currentItems.toMutableList().apply {
@@ -600,3 +621,4 @@ class VideoListViewModel(
     }
   }
 }
+
