@@ -189,6 +189,15 @@ android {
     }
   }
 
+  signingConfigs {
+    create("release") {
+      storeFile = file("release.keystore")
+      storePassword = "android"
+      keyAlias = "androiddebugkey"
+      keyPassword = "android"
+    }
+  }
+
   buildTypes {
     named("release") {
       buildConfigField("boolean", "IS_PREVIEW_BUILD", "false")
@@ -196,7 +205,7 @@ android {
       if (isExperimentalBuild) versionNameSuffix = "-exp.r${getCommitCount()}"
       isMinifyEnabled = true
       isShrinkResources = true
-      signingConfig = signingConfigs.getByName("debug")
+      signingConfig = if (file("release.keystore").exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
       proguardFiles(
         getDefaultProguardFile("proguard-android-optimize.txt"),
         "proguard-rules.pro",
@@ -208,7 +217,7 @@ android {
 
     create("preview") {
       initWith(getByName("release"))
-      signingConfig = signingConfigs.getByName("debug")
+      signingConfig = if (file("release.keystore").exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
       buildConfigField("boolean", "IS_PREVIEW_BUILD", "true")
       buildConfigField("boolean", "IS_EXPERIMENTAL_BUILD", "false")
       versionNameSuffix = "-beta.r${getCommitCount()}"

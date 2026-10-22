@@ -6385,9 +6385,51 @@ val isBrightnessSliderShown = MutableStateFlow(false)
     setVideoPan(0f, 0f)
   }
 
+  fun setVideoPanX(x: Float) {
+    setVideoPan(x, videoPanY.value)
+  }
+
+  fun setVideoPanY(y: Float) {
+    setVideoPan(videoPanX.value, y)
+  }
+
   fun resetVideoZoom() {
     setVideoZoom(0f)
     resetVideoPan()
+  }
+
+  private val _advancedZoomEnabled = MutableStateFlow(false)
+  val advancedZoomEnabled: StateFlow<Boolean> = _advancedZoomEnabled.asStateFlow()
+
+  private val _videoScaleX = MutableStateFlow(1f)
+  val videoScaleX: StateFlow<Float> = _videoScaleX.asStateFlow()
+
+  private val _videoScaleY = MutableStateFlow(1f)
+  val videoScaleY: StateFlow<Float> = _videoScaleY.asStateFlow()
+
+  fun setAdvancedZoomEnabled(enabled: Boolean) {
+    _advancedZoomEnabled.value = enabled
+    if (enabled) {
+      setVideoZoom(0f)
+    } else {
+      setVideoScaleX(1f)
+      setVideoScaleY(1f)
+    }
+  }
+
+  fun setVideoScaleX(scale: Float) {
+    _videoScaleX.value = scale
+    PlaybackSession.setPropertyDouble("video-scale-x", scale.toDouble())
+  }
+
+  fun setVideoScaleY(scale: Float) {
+    _videoScaleY.value = scale
+    PlaybackSession.setPropertyDouble("video-scale-y", scale.toDouble())
+  }
+
+  fun resetAdvancedZoom() {
+    setVideoScaleX(1f)
+    setVideoScaleY(1f)
   }
 
   // ==================== Frame Navigation ====================

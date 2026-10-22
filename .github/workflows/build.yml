@@ -117,6 +117,17 @@ jobs:
           test -f "$bundle"
 
           if [[ -z "$SIGNING_KEYSTORE" ]]; then
+            if [[ -f "app/release.keystore" ]]; then
+              echo "Using repository release.keystore to sign CI bundle."
+              jarsigner \
+                -keystore app/release.keystore \
+                -storepass "android" \
+                -keypass "android" \
+                "$bundle" \
+                "androiddebugkey"
+              jarsigner -verify "$bundle"
+              exit 0
+            fi
             echo "SIGNING_KEYSTORE is unavailable (expected for untrusted fork PRs); keeping the CI bundle unsigned."
             exit 0
           fi
@@ -156,8 +167,12 @@ jobs:
           test -d "$out_dir"
 
           if [[ -z "$SIGNING_KEYSTORE" ]]; then
-            echo "SIGNING_KEYSTORE is unavailable; verifying/signing CI APKs with debug keystore."
-            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" 2>/dev/null || true
+            echo "SIGNING_KEYSTORE is unavailable; verifying/signing CI APKs with release/debug keystore."
+            if [[ -f "app/release.keystore" ]]; then
+              cp app/release.keystore signing.keystore
+            else
+              keytool -genkeypair -v -keystore signing.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" 2>/dev/null || true
+            fi
             for abi in $APK_ABIS; do
               signed="$out_dir/app-${APK_DIR}-${abi}-release.apk"
               unsigned="$out_dir/app-${APK_DIR}-${abi}-release-unsigned.apk"
@@ -172,7 +187,7 @@ jobs:
                 rm -f "$staged"
                 zip -d "$apk_to_sign" 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/MANIFEST.MF' 2>/dev/null || true
                 "$apksigner" sign \
-                  --ks debug.keystore \
+                  --ks signing.keystore \
                   --ks-pass "pass:android" \
                   --key-pass "pass:android" \
                   --v1-signing-enabled true \

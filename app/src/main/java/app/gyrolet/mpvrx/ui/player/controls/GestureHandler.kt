@@ -243,20 +243,10 @@ fun GestureHandler(
   val twoFingerTapTimeout = 400L
 
   LaunchedEffect(twoFingerTapCount) {
-    if (twoFingerTapCount == 1 && !twoFingerDoubleTapToSkip) {
-      val side = lastTwoFingerTapSide
-      if (side != null) {
-        val forward = if (reverseDoubleTap) side == "left" else side == "right"
-        viewModel.skipChapter(forward)
-      }
+    if (twoFingerTapCount > 0) {
+      delay(twoFingerTapTimeout)
       twoFingerTapCount = 0
       lastTwoFingerTapSide = null
-    } else if (twoFingerTapCount == 1 && twoFingerDoubleTapToSkip) {
-      delay(twoFingerTapTimeout)
-      if (twoFingerTapCount == 1) {
-        twoFingerTapCount = 0
-        lastTwoFingerTapSide = null
-      }
     }
   }
 
@@ -350,56 +340,86 @@ fun GestureHandler(
           if (!twoFingerTapToSkipChapter || areControlsLocked || (panelShown != Panels.None && !allowGesturesInPanels)) return@pointerInput
           awaitEachGesture {
             val firstDown = awaitFirstDown(requireUnconsumed = false)
-            val startTime = System.currentTimeMillis()
-            var maxPointerCount = 1
-            var maxDistance = 0f
-            val startPos = firstDown.position
+            val firstDownTime = System.currentTimeMillis()
+            var maxPointers = 1
+            var firstFingerMoved = false
+            var secondFingerMoved = false
+            val firstPos = firstDown.position
+            var secondPos = androidx.compose.ui.geometry.Offset.Zero
+            var secondDownTime = 0L
             var twoFingersSimultaneous = false
-            var tapSide = if (startPos.x < size.width / 2f) "left" else "right"
+            val touchSlopSq = 40f * 40f
 
             do {
               val event = awaitPointerEvent()
-              val currentPointers = event.changes.filter { it.pressed }
-              if (currentPointers.size > maxPointerCount) {
-                maxPointerCount = currentPointers.size
+              val pressed = event.changes.filter { it.pressed }
+              val pressedCount = pressed.size
+
+              if (pressedCount > maxPointers) {
+                maxPointers = pressedCount
               }
-              if (currentPointers.size >= 2) {
+
+              if (pressedCount == 2) {
                 twoFingersSimultaneous = true
-                val avgX = currentPointers.map { it.position.x }.average().toFloat()
-                tapSide = if (avgX < size.width / 2f) "left" else "right"
-              }
-              for (change in event.changes) {
-                val dist = (change.position - startPos).getDistance()
-                if (dist > maxDistance) {
-                  maxDistance = dist
+                if (secondDownTime == 0L) {
+                  secondDownTime = System.currentTimeMillis()
+                  val other = pressed.firstOrNull { it.id != firstDown.id } ?: pressed[1]
+                  secondPos = other.position
                 }
+              }
+
+              for (change in event.changes) {
+                if (change.id == firstDown.id) {
+                  val dx = change.position.x - firstPos.x
+                  val dy = change.position.y - firstPos.y
+                  if (dx * dx + dy * dy > touchSlopSq) firstFingerMoved = true
+                } else if (secondDownTime != 0L) {
+                  val dx = change.position.x - secondPos.x
+                  val dy = change.position.y - secondPos.y
+                  if (dx * dx + dy * dy > touchSlopSq) secondFingerMoved = true
+                }
+              }
+
+              if (maxPointers > 2 || firstFingerMoved || secondFingerMoved) {
+                break
               }
             } while (event.changes.any { it.pressed })
 
-            val duration = System.currentTimeMillis() - startTime
+            val totalDuration = System.currentTimeMillis() - firstDownTime
             val isValidTwoFingerTap = twoFingersSimultaneous &&
-              duration < 350L &&
-              maxDistance < 150f
+              maxPointers == 2 &&
+              !firstFingerMoved &&
+              !secondFingerMoved &&
+              totalDuration in 30L..350L
 
             if (isValidTwoFingerTap) {
+              val midX = if (secondPos != androidx.compose.ui.geometry.Offset.Zero) {
+                (firstPos.x + secondPos.x) / 2f
+              } else {
+                firstPos.x
+              }
+              val isRightSide = midX >= size.width / 2f
+              val side = if (isRightSide) "right" else "left"
               val now = System.currentTimeMillis()
-              val timeSinceLast = now - lastTwoFingerTapTime
-              val side = tapSide
 
               if (twoFingerDoubleTapToSkip) {
+                val timeSinceLast = now - lastTwoFingerTapTime
                 if (twoFingerTapCount == 1 && timeSinceLast < twoFingerTapTimeout && lastTwoFingerTapSide == side) {
                   twoFingerTapCount = 0
+                  lastTwoFingerTapTime = 0L
                   lastTwoFingerTapSide = null
-                  val forward = if (reverseDoubleTap) side == "left" else side == "right"
-                  viewModel.skipChapter(forward)
+                  actionHaptics.pickup()
+                  val isForward = (side == "right") xor reverseDoubleTap
+                  viewModel.skipChapter(forward = isForward)
                 } else {
+                  twoFingerTapCount = 1
                   lastTwoFingerTapTime = now
                   lastTwoFingerTapSide = side
-                  twoFingerTapCount = 1
                 }
               } else {
-                val forward = if (reverseDoubleTap) side == "left" else side == "right"
-                viewModel.skipChapter(forward)
+                actionHaptics.pickup()
+                val isForward = (side == "right") xor reverseDoubleTap
+                viewModel.skipChapter(forward = isForward)
               }
             }
           }
