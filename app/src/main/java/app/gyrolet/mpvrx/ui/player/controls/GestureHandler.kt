@@ -240,7 +240,7 @@ fun GestureHandler(
   var twoFingerTapCount by remember { mutableStateOf(0) }
   var lastTwoFingerTapTime by remember { mutableStateOf(0L) }
   var lastTwoFingerTapSide by remember { mutableStateOf<String?>(null) }
-  val twoFingerTapTimeout = 550L
+  val twoFingerTapTimeout = 850L
 
   LaunchedEffect(twoFingerTapCount) {
     if (twoFingerTapCount > 0) {
@@ -350,7 +350,7 @@ fun GestureHandler(
             var secondDownTime = 0L
             var secondDownId: androidx.compose.ui.input.pointer.PointerId? = null
             var twoFingersSimultaneous = false
-            val touchSlop = viewConfiguration.touchSlop.coerceAtLeast(60f)
+            val touchSlop = viewConfiguration.touchSlop.coerceAtLeast(100f)
             val touchSlopSq = touchSlop * touchSlop
 
             do {
@@ -386,7 +386,7 @@ fun GestureHandler(
                 }
               }
 
-              if (maxPointers > 3 || firstFingerMoved || secondFingerMoved) {
+              if (maxPointers > 4 || firstFingerMoved || secondFingerMoved) {
                 isCancelled = true
               }
             } while (event.changes.any { it.pressed })
@@ -395,11 +395,11 @@ fun GestureHandler(
             val stagger = if (secondDownTime > 0L) Math.abs(secondDownTime - firstDownTime) else 0L
             val isValidTwoFingerTap = !isCancelled &&
               twoFingersSimultaneous &&
-              maxPointers <= 3 &&
+              maxPointers <= 4 &&
               !firstFingerMoved &&
               !secondFingerMoved &&
-              stagger <= 250L &&
-              totalDuration in 20L..550L
+              stagger <= 350L &&
+              totalDuration in 10L..650L
 
             if (isValidTwoFingerTap) {
               val midX = if (secondPos != androidx.compose.ui.geometry.Offset.Zero) {
@@ -413,7 +413,7 @@ fun GestureHandler(
 
               if (twoFingerDoubleTapToSkip) {
                 val timeSinceLast = now - lastTwoFingerTapTime
-                if (twoFingerTapCount == 1 && timeSinceLast in 40L..550L && lastTwoFingerTapSide == side) {
+                if (twoFingerTapCount == 1 && timeSinceLast <= 850L) {
                   twoFingerTapCount = 0
                   lastTwoFingerTapTime = 0L
                   lastTwoFingerTapSide = null
@@ -424,6 +424,7 @@ fun GestureHandler(
                   twoFingerTapCount = 1
                   lastTwoFingerTapTime = now
                   lastTwoFingerTapSide = side
+                  actionHaptics.tick()
                 }
               } else {
                 actionHaptics.pickup()
