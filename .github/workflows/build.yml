@@ -23,12 +23,35 @@ jobs:
       fail-fast: false
       matrix:
         distribution:
+          - id: standard
+            name: Standard
+            gradle: Standard
+            dir: standard
+            abis: universal arm64-v8a armeabi-v7a x86 x86_64
+            package: apk
           - id: fongmi
             name: FongMi
             gradle: Fongmi
             dir: fongmi
             abis: universal
             package: apk
+          - id: no_vulkan
+            name: No Vulkan
+            gradle: NoVulkan
+            dir: noVulkan
+            abis: universal
+            package: apk
+          - id: playstore
+            name: Play Store
+            gradle: Playstore
+            dir: playstore
+            abis: universal
+            package: apk
+          - id: playstore_bundle
+            name: Play Store Bundle
+            gradle: Playstore
+            dir: playstore
+            package: aab
     env:
       DISTRIBUTION: ${{ matrix.distribution.id }}
       GRADLE_FLAVOR: ${{ matrix.distribution.gradle }}
