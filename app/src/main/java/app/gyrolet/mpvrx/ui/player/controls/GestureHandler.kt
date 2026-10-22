@@ -240,7 +240,7 @@ fun GestureHandler(
   var twoFingerTapCount by remember { mutableStateOf(0) }
   var lastTwoFingerTapTime by remember { mutableStateOf(0L) }
   var lastTwoFingerTapSide by remember { mutableStateOf<String?>(null) }
-  val twoFingerTapTimeout = 850L
+  val twoFingerTapTimeout = 900L
 
   LaunchedEffect(twoFingerTapCount) {
     if (twoFingerTapCount > 0) {
@@ -350,7 +350,7 @@ fun GestureHandler(
             var secondDownTime = 0L
             var secondDownId: androidx.compose.ui.input.pointer.PointerId? = null
             var twoFingersSimultaneous = false
-            val touchSlop = viewConfiguration.touchSlop.coerceAtLeast(100f)
+            val touchSlop = viewConfiguration.touchSlop.coerceAtLeast(120f)
             val touchSlopSq = touchSlop * touchSlop
 
             do {
@@ -398,8 +398,8 @@ fun GestureHandler(
               maxPointers <= 4 &&
               !firstFingerMoved &&
               !secondFingerMoved &&
-              stagger <= 350L &&
-              totalDuration in 10L..650L
+              stagger <= 450L &&
+              totalDuration in 10L..750L
 
             if (isValidTwoFingerTap) {
               val midX = if (secondPos != androidx.compose.ui.geometry.Offset.Zero) {
@@ -413,7 +413,7 @@ fun GestureHandler(
 
               if (twoFingerDoubleTapToSkip) {
                 val timeSinceLast = now - lastTwoFingerTapTime
-                if (twoFingerTapCount == 1 && timeSinceLast <= 850L) {
+                if (twoFingerTapCount == 1 && timeSinceLast <= 900L) {
                   twoFingerTapCount = 0
                   lastTwoFingerTapTime = 0L
                   lastTwoFingerTapSide = null
@@ -486,7 +486,16 @@ fun GestureHandler(
               if (event.changes.count { it.pressed } >= 2) {
                 isMultiTouch = true
               }
-              val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+              val pointer = event.changes.firstOrNull { it.id == down.id }
+              if (pointer == null) {
+                if (isMultiTouch || event.changes.any { it.pressed }) {
+                  while (event.changes.any { it.pressed }) {
+                    val nextEvent = awaitPointerEvent()
+                    if (!nextEvent.changes.any { it.pressed }) break
+                  }
+                }
+                break
+              }
               if (gestureOwner != null) wasOwnedByAnotherGesture = true
 
               // Check if this is a drag (not a tap)
@@ -505,10 +514,17 @@ fun GestureHandler(
               }
 
               if (!pointer.pressed) {
+                if (isMultiTouch || event.changes.any { it.pressed }) {
+                  while (event.changes.any { it.pressed }) {
+                    val nextEvent = awaitPointerEvent()
+                    if (!nextEvent.changes.any { it.pressed }) break
+                  }
+                  break
+                }
+
                 // Pointer lifted - this is a tap if it wasn't a drag
                 if (
                   !isDrag &&
-                  !isMultiTouch &&
                   !wasConsumedByTapGesture &&
                   !wasOwnedByAnotherGesture &&
                   !gestureClaimedForPointer
