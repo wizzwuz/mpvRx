@@ -765,6 +765,33 @@ object SearchablePreferences {
       )
       add(
         SearchablePreference(
+          titleRes = R.string.pref_gesture_dont_show_seekbar_on_double_tap_title,
+          summaryRes = R.string.pref_gesture_dont_show_seekbar_on_double_tap_summary,
+          keywords = listOf("double", "tap", "seekbar", "timeline", "seek", "hide"),
+          category = "Gestures",
+          screen = GesturePreferencesScreen,
+        ),
+      )
+      add(
+        SearchablePreference(
+          titleRes = R.string.pref_gesture_reverse_double_tap_title,
+          summaryRes = R.string.pref_gesture_reverse_double_tap_summary,
+          keywords = listOf("reverse", "invert", "double", "tap", "sides"),
+          category = "Gestures",
+          screen = GesturePreferencesScreen,
+        ),
+      )
+      add(
+        SearchablePreference(
+          titleRes = R.string.pref_gesture_two_finger_tap_chapter_skip_title,
+          summaryRes = R.string.pref_gesture_two_finger_tap_chapter_skip_summary,
+          keywords = listOf("two finger", "double finger", "chapter", "skip", "tap"),
+          category = "Gestures",
+          screen = GesturePreferencesScreen,
+        ),
+      )
+      add(
+        SearchablePreference(
           titleRes = R.string.pref_gesture_media_previous,
           keywords = listOf("media", "previous", "gesture", "control", "backward"),
           category = "Gestures",

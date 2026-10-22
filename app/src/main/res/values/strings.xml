@@ -2801,4 +2801,18 @@
   <string name="update_confirm_install">Confirm installation</string>
   <string name="update_install_complete">Update installed. Tap to open mpvRx.</string>
   <string name="update_download_waiting">Waiting for the network or retrying the download…</string>
+  <!-- Gesture customization -->
+  <string name="pref_gesture_dont_show_seekbar_on_double_tap_title">Don\'t show seekbar on double tap</string>
+  <string name="pref_gesture_dont_show_seekbar_on_double_tap_summary">Hide the timeline seekbar while double tapping to seek</string>
+  <string name="pref_gesture_two_finger_tap_chapter_skip_title">Two-finger tap to skip chapters</string>
+  <string name="pref_gesture_two_finger_tap_chapter_skip_summary">Tap with two fingers on the left to go to the previous chapter, right to go to the next chapter</string>
+  <string name="pref_gesture_two_finger_double_tap_to_skip_title">Require two-finger double tap</string>
+  <string name="pref_gesture_two_finger_double_tap_to_skip_summary">Require a double tap with two fingers to avoid accidental chapter skips</string>
+  <string name="pref_gesture_reverse_double_tap_title">Reverse double tap / two-finger sides</string>
+  <string name="pref_gesture_reverse_double_tap_summary">Invert left and right sides for seek and chapter skip gestures</string>
+  <string name="player_osd_no_chapters">No chapters</string>
+  <string name="player_osd_first_chapter">First chapter</string>
+  <string name="player_osd_last_chapter">Last chapter</string>
+  <string name="player_osd_next_chapter">Next: %1$s</string>
+  <string name="player_osd_prev_chapter">Previous: %1$s</string>
 </resources>

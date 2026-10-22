@@ -265,6 +265,7 @@ fun PlayerControls(
   val showDoubleTapOvals by playerPreferences.showDoubleTapOvals.collectAsState()
   val showSeekTime by playerPreferences.showSeekTimeWhileSeeking.collectAsState()
   val showSeekbarDuringHorizontalSeeking by gesturePreferences.showSeekbarDuringHorizontalSeeking.collectAsState()
+  val dontShowSeekBarOnDoubleTap by gesturePreferences.dontShowSeekBarOnDoubleTap.collectAsState()
   val showBufferedRange by playerPreferences.showBufferedRange.collectAsState()
   val showChapterIndicators by playerPreferences.showChapterIndicators.collectAsState()
   // The buffering pill reads torrent details itself, so stats ticks do not re-run the controls tree.
@@ -1716,6 +1717,7 @@ is PlayerUpdates.FrameInfo -> {
               // horizontal seek gesture is governed by the user preference.
               (controlsShown ||
                 if (isHorizontalSeekActive) showSeekbarDuringHorizontalSeeking else seekBarShown) &&
+                !(dontShowSeekBarOnDoubleTap && doubleTapSeekAmount != 0) &&
                 !areControlsLocked,
             enter = buildControlsEnterV(controlsAnimStyle, reduceMotion, enterMs) { it },
             exit = buildControlsExitV(controlsAnimStyle, reduceMotion, exitMs) { it },

@@ -164,6 +164,10 @@ fun GestureHandler(
   val panAndZoomEnabled by playerPreferences.panAndZoomEnabled.collectAsState()
   val horizontalSwipeToSeek by playerPreferences.horizontalSwipeToSeek.collectAsState()
   val horizontalSwipeSensitivity by playerPreferences.horizontalSwipeSensitivity.collectAsState()
+  val reverseDoubleTap by gesturePreferences.reverseDoubleTap.collectAsState()
+  val useSingleTapForLeftRight by gesturePreferences.useSingleTapForLeftRight.collectAsState()
+  val twoFingerTapToSkipChapter by gesturePreferences.twoFingerTapToSkipChapter.collectAsState()
+  val twoFingerDoubleTapToSkip by gesturePreferences.twoFingerDoubleTapToSkip.collectAsState()
   var isLongPressing by remember { mutableStateOf(false) }
   var isDynamicSpeedControlActive by remember { mutableStateOf(false) }
   var dynamicSpeedStartX by remember { mutableStateOf(0f) }
@@ -232,6 +236,30 @@ fun GestureHandler(
       )
     }
 
+  // Two-finger tap state tracking
+  var twoFingerTapCount by remember { mutableStateOf(0) }
+  var lastTwoFingerTapTime by remember { mutableStateOf(0L) }
+  var lastTwoFingerTapSide by remember { mutableStateOf<String?>(null) }
+  val twoFingerTapTimeout = 400L
+
+  LaunchedEffect(twoFingerTapCount) {
+    if (twoFingerTapCount == 1 && !twoFingerDoubleTapToSkip) {
+      val side = lastTwoFingerTapSide
+      if (side != null) {
+        val forward = if (reverseDoubleTap) side == "left" else side == "right"
+        viewModel.skipChapter(forward)
+      }
+      twoFingerTapCount = 0
+      lastTwoFingerTapSide = null
+    } else if (twoFingerTapCount == 1 && twoFingerDoubleTapToSkip) {
+      delay(twoFingerTapTimeout)
+      if (twoFingerTapCount == 1) {
+        twoFingerTapCount = 0
+        lastTwoFingerTapSide = null
+      }
+    }
+  }
+
   // Isolated double-tap state tracking
   var tapCount by remember { mutableStateOf(0) }
   var lastTapTime by remember { mutableStateOf(0L) }
@@ -252,6 +280,15 @@ fun GestureHandler(
         val isCenterTap = region == "center"
         if (useSingleTapForCenter && isCenterTap) {
           viewModel.handleCenterSingleTap()
+        } else if (useSingleTapForLeftRight && (region == "left" || region == "right")) {
+          val effectiveRegion = if (reverseDoubleTap) {
+            if (region == "left") "right" else "left"
+          } else region
+          if (effectiveRegion == "left") {
+            viewModel.handleLeftSingleTap()
+          } else {
+            viewModel.handleRightSingleTap()
+          }
         } else {
           if (anyPanelShown && !allowGesturesInPanels) {
             if (panelShown != Panels.None) viewModel.panelShown.update { Panels.None }
@@ -290,6 +327,64 @@ fun GestureHandler(
     modifier =
       modifier
         .fillMaxSize()
+        .pointerInput(twoFingerTapToSkipChapter, twoFingerDoubleTapToSkip, reverseDoubleTap, areControlsLocked, panelShown, allowGesturesInPanels) {
+          if (!twoFingerTapToSkipChapter || areControlsLocked || (panelShown != Panels.None && !allowGesturesInPanels)) return@pointerInput
+          awaitEachGesture {
+            val firstDown = awaitFirstDown(requireUnconsumed = false)
+            val startTime = System.currentTimeMillis()
+            var maxPointerCount = 1
+            var maxDistance = 0f
+            val startPos = firstDown.position
+            var twoFingersSimultaneous = false
+            var tapSide = if (startPos.x < size.width / 2f) "left" else "right"
+
+            do {
+              val event = awaitPointerEvent()
+              val currentPointers = event.changes.filter { it.pressed }
+              if (currentPointers.size > maxPointerCount) {
+                maxPointerCount = currentPointers.size
+              }
+              if (currentPointers.size >= 2) {
+                twoFingersSimultaneous = true
+                val avgX = currentPointers.map { it.position.x }.average().toFloat()
+                tapSide = if (avgX < size.width / 2f) "left" else "right"
+              }
+              for (change in event.changes) {
+                val dist = (change.position - startPos).getDistance()
+                if (dist > maxDistance) {
+                  maxDistance = dist
+                }
+              }
+            } while (event.changes.any { it.pressed })
+
+            val duration = System.currentTimeMillis() - startTime
+            val isValidTwoFingerTap = twoFingersSimultaneous &&
+              duration < 350L &&
+              maxDistance < 150f
+
+            if (isValidTwoFingerTap) {
+              val now = System.currentTimeMillis()
+              val timeSinceLast = now - lastTwoFingerTapTime
+              val side = tapSide
+
+              if (twoFingerDoubleTapToSkip) {
+                if (twoFingerTapCount == 1 && timeSinceLast < twoFingerTapTimeout && lastTwoFingerTapSide == side) {
+                  twoFingerTapCount = 0
+                  lastTwoFingerTapSide = null
+                  val forward = if (reverseDoubleTap) side == "left" else side == "right"
+                  viewModel.skipChapter(forward)
+                } else {
+                  lastTwoFingerTapTime = now
+                  lastTwoFingerTapSide = side
+                  twoFingerTapCount = 1
+                }
+              } else {
+                val forward = if (reverseDoubleTap) side == "left" else side == "right"
+                viewModel.skipChapter(forward)
+              }
+            }
+          }
+        }
         .pointerInput(areControlsLocked, doubleTapSeekAreaWidth, gesturePreferences, isVerticalGestureActive) {
           // Isolated double-tap detection that doesn't interfere with other gestures
           if (isVerticalGestureActive) return@pointerInput
@@ -384,7 +479,15 @@ fun GestureHandler(
                     wasConsumedByTapGesture = true
                     pointer.consume()
 
-                    when (region) {
+                    val effectiveRegion = if (reverseDoubleTap) {
+                      when (region) {
+                        "left" -> "right"
+                        "right" -> "left"
+                        else -> region
+                      }
+                    } else region
+
+                    when (effectiveRegion) {
                       "right" -> {
                         val rightGesture = gesturePreferences.rightSingleActionGesture.get()
                         if (rightGesture == SingleActionGesture.Seek) {
@@ -424,7 +527,15 @@ fun GestureHandler(
                     lastTapTime = downTime
                     lastTapPosition = downPosition
 
-                    when (region) {
+                    val effectiveRegion = if (reverseDoubleTap) {
+                      when (region) {
+                        "left" -> "right"
+                        "right" -> "left"
+                        else -> region
+                      }
+                    } else region
+
+                    when (effectiveRegion) {
                       "right" -> {
                         val rightGesture = gesturePreferences.rightSingleActionGesture.get()
                         if (rightGesture == SingleActionGesture.Seek) {

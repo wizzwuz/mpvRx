@@ -2766,4 +2766,18 @@
   <string name="update_confirm_install">Подтвердить установку</string>
   <string name="update_install_complete">Обновление установлено. Нажмите, чтобы открыть mpvRx.</string>
   <string name="update_download_waiting">Ожидание сети или повторная попытка скачивания…</string>
+  <!-- Gesture customization -->
+  <string name="pref_gesture_dont_show_seekbar_on_double_tap_title">Не показывать строку поиска при двойном нажатии</string>
+  <string name="pref_gesture_dont_show_seekbar_on_double_tap_summary">Скрывать шкалу времени при перемотке двойным нажатием</string>
+  <string name="pref_gesture_two_finger_tap_chapter_skip_title">Нажатие двумя пальцами для пропуска глав</string>
+  <string name="pref_gesture_two_finger_tap_chapter_skip_summary">Нажатие двумя пальцами слева — переход к предыдущей главе, справа — к следующей</string>
+  <string name="pref_gesture_two_finger_double_tap_to_skip_title">Требовать двойное нажатие двумя пальцами</string>
+  <string name="pref_gesture_two_finger_double_tap_to_skip_summary">Требовать двойное касание двумя пальцами для предотвращения случайных срабатываний</string>
+  <string name="pref_gesture_reverse_double_tap_title">Инвертировать стороны жестов</string>
+  <string name="pref_gesture_reverse_double_tap_summary">Поменять местами стороны для перемотки и переключения глав</string>
+  <string name="player_osd_no_chapters">Нет глав</string>
+  <string name="player_osd_first_chapter">Первая глава</string>
+  <string name="player_osd_last_chapter">Последняя глава</string>
+  <string name="player_osd_next_chapter">След: %1$s</string>
+  <string name="player_osd_prev_chapter">Пред: %1$s</string>
 </resources>

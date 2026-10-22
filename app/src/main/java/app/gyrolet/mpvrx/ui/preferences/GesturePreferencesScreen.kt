@@ -489,6 +489,88 @@ object GesturePreferencesScreen : Screen {
 
               PreferenceDivider()
 
+              val dontShowSeekBarOnDoubleTap by preferences.dontShowSeekBarOnDoubleTap.collectAsState()
+              SwitchPreference(
+                modifier = Modifier.settingsSearchTarget(R.string.pref_gesture_dont_show_seekbar_on_double_tap_title),
+                value = dontShowSeekBarOnDoubleTap,
+                onValueChange = { preferences.dontShowSeekBarOnDoubleTap.set(it) },
+                title = {
+                  Text(
+                    text = stringResource(id = R.string.pref_gesture_dont_show_seekbar_on_double_tap_title),
+                  )
+                },
+                summary = {
+                  Text(
+                    text = stringResource(id = R.string.pref_gesture_dont_show_seekbar_on_double_tap_summary),
+                    color = MaterialTheme.colorScheme.outline,
+                  )
+                },
+              )
+
+              PreferenceDivider()
+
+              val reverseDoubleTap by preferences.reverseDoubleTap.collectAsState()
+              SwitchPreference(
+                modifier = Modifier.settingsSearchTarget(R.string.pref_gesture_reverse_double_tap_title),
+                value = reverseDoubleTap,
+                onValueChange = { preferences.reverseDoubleTap.set(it) },
+                title = {
+                  Text(
+                    text = stringResource(id = R.string.pref_gesture_reverse_double_tap_title),
+                  )
+                },
+                summary = {
+                  Text(
+                    text = stringResource(id = R.string.pref_gesture_reverse_double_tap_summary),
+                    color = MaterialTheme.colorScheme.outline,
+                  )
+                },
+              )
+
+              PreferenceDivider()
+
+              val twoFingerTapToSkipChapter by preferences.twoFingerTapToSkipChapter.collectAsState()
+              SwitchPreference(
+                modifier = Modifier.settingsSearchTarget(R.string.pref_gesture_two_finger_tap_chapter_skip_title),
+                value = twoFingerTapToSkipChapter,
+                onValueChange = { preferences.twoFingerTapToSkipChapter.set(it) },
+                title = {
+                  Text(
+                    text = stringResource(id = R.string.pref_gesture_two_finger_tap_chapter_skip_title),
+                  )
+                },
+                summary = {
+                  Text(
+                    text = stringResource(id = R.string.pref_gesture_two_finger_tap_chapter_skip_summary),
+                    color = MaterialTheme.colorScheme.outline,
+                  )
+                },
+              )
+
+              if (twoFingerTapToSkipChapter) {
+                PreferenceDivider()
+
+                val twoFingerDoubleTapToSkip by preferences.twoFingerDoubleTapToSkip.collectAsState()
+                SwitchPreference(
+                  modifier = Modifier.settingsSearchTarget(R.string.pref_gesture_two_finger_double_tap_to_skip_title),
+                  value = twoFingerDoubleTapToSkip,
+                  onValueChange = { preferences.twoFingerDoubleTapToSkip.set(it) },
+                  title = {
+                    Text(
+                      text = stringResource(id = R.string.pref_gesture_two_finger_double_tap_to_skip_title),
+                    )
+                  },
+                  summary = {
+                    Text(
+                      text = stringResource(id = R.string.pref_gesture_two_finger_double_tap_to_skip_summary),
+                      color = MaterialTheme.colorScheme.outline,
+                    )
+                  },
+                )
+              }
+
+              PreferenceDivider()
+
               val centerVerticalSubtitlePositionGesture by preferences.centerVerticalSubtitlePositionGesture
                 .collectAsState()
               SwitchPreference(

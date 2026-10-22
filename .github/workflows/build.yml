@@ -23,36 +23,12 @@ jobs:
       fail-fast: false
       matrix:
         distribution:
-          - id: standard
-            name: Standard
-            gradle: Standard
-            dir: standard
-            abis: universal arm64-v8a armeabi-v7a x86 x86_64
-            package: apk
           - id: fongmi
             name: FongMi
             gradle: Fongmi
             dir: fongmi
             abis: universal
             package: apk
-          - id: no_vulkan
-            name: No Vulkan
-            gradle: NoVulkan
-            dir: noVulkan
-            abis: universal
-            package: apk
-          - id: playstore
-            name: Play Store
-            gradle: Playstore
-            dir: playstore
-            abis: universal
-            package: apk
-          - id: playstore_bundle
-            name: Play Store
-            gradle: Playstore
-            dir: playstore
-            abis: ''
-            package: aab
     env:
       DISTRIBUTION: ${{ matrix.distribution.id }}
       GRADLE_FLAVOR: ${{ matrix.distribution.gradle }}
@@ -153,8 +129,41 @@ jobs:
 
           test -x "$apksigner"
 
+          out_dir="app/build/outputs/apk/${APK_DIR}/release"
+          test -d "$out_dir"
+
           if [[ -z "$SIGNING_KEYSTORE" ]]; then
-            echo "SIGNING_KEYSTORE is unavailable (expected for untrusted fork PRs); keeping CI APKs unsigned."
+            echo "SIGNING_KEYSTORE is unavailable; verifying/signing CI APKs with debug keystore."
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" 2>/dev/null || true
+            for abi in $APK_ABIS; do
+              signed="$out_dir/app-${APK_DIR}-${abi}-release.apk"
+              unsigned="$out_dir/app-${APK_DIR}-${abi}-release-unsigned.apk"
+              apk_to_sign=""
+              if [[ -f "$unsigned" ]]; then
+                apk_to_sign="$unsigned"
+              elif [[ -f "$signed" ]]; then
+                apk_to_sign="$signed"
+              fi
+              if [[ -n "$apk_to_sign" ]]; then
+                staged="$out_dir/app-${APK_DIR}-${abi}-staged.apk"
+                rm -f "$staged"
+                zip -d "$apk_to_sign" 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/MANIFEST.MF' 2>/dev/null || true
+                "$apksigner" sign \
+                  --ks debug.keystore \
+                  --ks-pass "pass:android" \
+                  --key-pass "pass:android" \
+                  --v1-signing-enabled true \
+                  --v2-signing-enabled true \
+                  --v3-signing-enabled true \
+                  --out "$staged" \
+                  "$apk_to_sign"
+                rm -f "$unsigned"
+                mv -f "$staged" "$signed"
+              fi
+              if [[ -f "$signed" ]]; then
+                "$apksigner" verify --verbose "$signed"
+              fi
+            done
             exit 0
           fi
 
@@ -188,11 +197,15 @@ jobs:
 
             local staged="$dir/$base-signing.apk"
             rm -f "$staged"
+            zip -d "$source" 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/MANIFEST.MF' 2>/dev/null || true
             "$apksigner" sign \
               --ks release.keystore \
               --ks-key-alias "$SIGNING_KEY_ALIAS" \
               --ks-pass "pass:$SIGNING_STORE_PASSWORD" \
               --key-pass "pass:$KEY_PASSWORD" \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
               --out "$staged" \
               "$source"
             "$apksigner" verify --verbose "$staged"
@@ -200,8 +213,6 @@ jobs:
             mv -f "$staged" "$signed"
           }
 
-          out_dir="app/build/outputs/apk/${APK_DIR}/release"
-          test -d "$out_dir"
           for abi in $APK_ABIS; do
             sign_apk "$out_dir" "app-${APK_DIR}-${abi}-release" "${APK_DIR} ${abi} release"
           done
@@ -352,7 +363,7 @@ jobs:
   publish-experimental:
     name: Publish experimental updates
     needs: build
-    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
+    if: ${{ github.repository == 'Riteshp2001/mpvRx' && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' && secrets.SIGNING_KEYSTORE != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
