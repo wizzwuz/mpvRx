@@ -97,13 +97,13 @@ fun PlayerSheets(
   onMakeDefaultSpeed: (Float) -> Unit,
   onResetDefaultSpeed: () -> Unit,
   // More sheet
-  sleepTimerTimeRemaining: Int,
   onStartSleepTimer: (Int) -> Unit,
   onOpenPanel: (Panels) -> Unit,
   onShowSheet: (Sheets) -> Unit,
   onDismissRequest: () -> Unit,
 ) {
   val isTelevision = DeviceFormFactor.isTelevision(LocalContext.current)
+  val qualityDownloadAction = rememberQualityDownloadAction(viewModel)
   val advancedPreferences = koinInject<AdvancedPreferences>()
   val storedConfigOverrides by advancedPreferences.mpvConfOverrides.collectAsState()
   val configOwnedOptions =
@@ -137,6 +137,19 @@ fun PlayerSheets(
           if (it == null) return@rememberLauncherForActivityResult
           onAddSubtitle(it)
         }
+      val openSystemSubtitlePicker = {
+        subtitlesPicker.launch(
+          arrayOf(
+            "text/plain",
+            "text/srt",
+            "text/vtt",
+            "application/x-subrip",
+            "application/x-subtitle",
+            "text/x-ssa",
+            "*/*",
+          ),
+        )
+      }
 
       val subtitlesPreferences = koinInject<app.gyrolet.mpvrx.preferences.SubtitlesPreferences>()
       val savedPickerPath = subtitlesPreferences.pickerPath.get()
@@ -168,17 +181,7 @@ fun PlayerSheets(
           },
           onSystemPickerRequest = {
             showFilePicker = false
-            subtitlesPicker.launch(
-              arrayOf(
-                "text/plain",
-                "text/srt",
-                "text/vtt",
-                "application/x-subrip",
-                "application/x-subtitle",
-                "text/x-ssa",
-                "*/*",
-              ),
-            )
+            openSystemSubtitlePicker()
           },
           matchToName = matchToName,
         )
@@ -215,7 +218,13 @@ fun PlayerSheets(
         },
         isSubtitleSelected = isSubtitleSelected,
         subtitleSelectionIndicator = subtitleSelectionIndicator,
-        onAddSubtitle = { showFilePicker = true },
+        onAddSubtitle = {
+          if (app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY) {
+            openSystemSubtitlePicker()
+          } else {
+            showFilePicker = true
+          }
+        },
         onRemoveSubtitle = onRemoveSubtitle,
         onOpenSubtitleSettings = { onOpenPanel(Panels.SubtitleSettings) },
         onOpenSubtitleDelay = { onOpenPanel(Panels.SubtitleDelay) },
@@ -310,6 +319,18 @@ fun PlayerSheets(
 
       val audioPreferences = koinInject<app.gyrolet.mpvrx.preferences.AudioPreferences>()
       val savedPickerPath = audioPreferences.pickerPath.get()
+      val openSystemAudioPicker = {
+        audioPicker.launch(
+          arrayOf(
+            "audio/*",
+            "application/ogg",
+            "application/x-flac",
+            "video/x-matroska",
+            "video/*",
+            "*/*",
+          ),
+        )
+      }
 
       val currentMediaTitle = viewModel.currentMediaTitle
       val matchToName =
@@ -360,16 +381,7 @@ fun PlayerSheets(
           },
           onSystemPickerRequest = {
             showAudioFilePicker = false
-            audioPicker.launch(
-              arrayOf(
-                "audio/*",
-                "application/ogg",
-                "application/x-flac",
-                "video/x-matroska",
-                "video/*",
-                "*/*",
-              ),
-            )
+            openSystemAudioPicker()
           },
           matchToName = matchToName,
           allowedExtensions = audioAllowedExtensions,
@@ -382,7 +394,13 @@ fun PlayerSheets(
           onSelectAudio(track)
           if (isTelevision) onDismissRequest()
         },
-        onAddAudioTrack = { showAudioFilePicker = true },
+        onAddAudioTrack = {
+          if (app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY) {
+            openSystemAudioPicker()
+          } else {
+            showAudioFilePicker = true
+          }
+        },
         onOpenDelayPanel = { onOpenPanel(Panels.AudioDelay) },
         onOpenEqualizerSheet = { onShowSheet(Sheets.Equalizer) },
         delayControlEnabled = "audio-delay" !in configOwnedOptions,
@@ -395,7 +413,6 @@ fun PlayerSheets(
     }
 
     Sheets.VideoQuality -> {
-      val qualityDownloadAction = rememberQualityDownloadAction(viewModel)
       val videoQualityTracks by viewModel.videoQualityTracks.collectAsState()
       val playbackState by app.gyrolet.mpvrx.ui.player.PlaybackSession.state.composeCollectAsState()
       val selectionGeneration = playbackState.generation
@@ -408,43 +425,13 @@ fun PlayerSheets(
     }
 
     Sheets.Chapters -> {
-      val bookmarks by viewModel.playbackBookmarks.composeCollectAsState()
-      val mediaId by viewModel.bookmarkMediaId.composeCollectAsState()
-      val scope = rememberCoroutineScope()
-      val context = LocalContext.current
-      var deleting by remember(mediaId) { mutableStateOf(false) }
-      ChaptersSheet(
+      ChaptersSheetWithBookmarks(
+        viewModel = viewModel,
         chapters = chapters,
-        currentChapter = chapter,
-        onClick = { onSeekToChapter(chapters.indexOf(it)) },
+        chapter = chapter,
+        onSeekToChapter = onSeekToChapter,
+        onShowSheet = onShowSheet,
         onDismissRequest = onDismissRequest,
-        itemActions = { segment ->
-          bookmarks.firstOrNull { it.mediaId == mediaId && it.title == segment.name && viewModel.bookmarkPositionMs(it) / 1000f == segment.start }?.let { bookmark ->
-            androidx.compose.material3.IconButton(enabled = !deleting, onClick = {
-              if (viewModel.preparePlaybackBookmark(bookmark)) onShowSheet(Sheets.BookmarkEditor)
-            }) {
-              app.gyrolet.mpvrx.ui.icons.Icon(app.gyrolet.mpvrx.ui.icons.Icons.RoundedFilled.Edit,
-                androidx.compose.ui.res.stringResource(R.string.audiobook_bookmark_name))
-            }
-            androidx.compose.material3.IconButton(enabled = !deleting, onClick = {
-              deleting = true
-              scope.launch {
-                try {
-                  viewModel.deletePlaybackBookmark(bookmark)
-                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                  throw cancelled
-                } catch (_: Exception) {
-                  Toast.makeText(context, R.string.playback_bookmark_update_failed, Toast.LENGTH_SHORT).show()
-                } finally {
-                  deleting = false
-                }
-              }
-            }) {
-              app.gyrolet.mpvrx.ui.icons.Icon(app.gyrolet.mpvrx.ui.icons.Icons.RoundedFilled.Delete,
-                androidx.compose.ui.res.stringResource(R.string.audiobook_delete_bookmark))
-            }
-          }
-        },
       )
     }
 
@@ -458,6 +445,9 @@ fun PlayerSheets(
 
     Sheets.More -> {
       val anime4KUiState by viewModel.anime4KUiState.composeCollectAsState()
+      // Read here: an active sleep timer ticks every second, and collecting it in PlayerControls
+      // re-ran the entire controls tree on each tick even while this sheet was closed.
+      val sleepTimerTimeRemaining by viewModel.remainingTime.composeCollectAsState()
       MoreSheet(
         remainingTime = sleepTimerTimeRemaining,
         onStartTimer = onStartSleepTimer,
@@ -597,43 +587,13 @@ fun PlayerSheets(
     Sheets.Playlist -> {
       val playbackState by app.gyrolet.mpvrx.ui.player.PlaybackSession.state.composeCollectAsState()
       if (playbackState.currentItem?.audiobook != null) {
-        val bookmarks by viewModel.playbackBookmarks.composeCollectAsState()
-        val mediaId by viewModel.bookmarkMediaId.composeCollectAsState()
-        val scope = rememberCoroutineScope()
-        val context = LocalContext.current
-        var deleting by remember(mediaId) { mutableStateOf(false) }
-        ChaptersSheet(
+        ChaptersSheetWithBookmarks(
+          viewModel = viewModel,
           chapters = chapters,
-          currentChapter = chapter,
-          onClick = { onSeekToChapter(chapters.indexOf(it)) },
+          chapter = chapter,
+          onSeekToChapter = onSeekToChapter,
+          onShowSheet = onShowSheet,
           onDismissRequest = onDismissRequest,
-          itemActions = { segment ->
-            bookmarks.firstOrNull { it.mediaId == mediaId && it.title == segment.name && viewModel.bookmarkPositionMs(it) / 1000f == segment.start }?.let { bookmark ->
-              androidx.compose.material3.IconButton(enabled = !deleting, onClick = {
-                if (viewModel.preparePlaybackBookmark(bookmark)) onShowSheet(Sheets.BookmarkEditor)
-              }) {
-                app.gyrolet.mpvrx.ui.icons.Icon(app.gyrolet.mpvrx.ui.icons.Icons.RoundedFilled.Edit,
-                  androidx.compose.ui.res.stringResource(R.string.audiobook_bookmark_name))
-              }
-              androidx.compose.material3.IconButton(enabled = !deleting, onClick = {
-                deleting = true
-                scope.launch {
-                  try {
-                    viewModel.deletePlaybackBookmark(bookmark)
-                  } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    throw cancelled
-                  } catch (_: Exception) {
-                    Toast.makeText(context, R.string.playback_bookmark_update_failed, Toast.LENGTH_SHORT).show()
-                  } finally {
-                    deleting = false
-                  }
-                }
-              }) {
-                app.gyrolet.mpvrx.ui.icons.Icon(app.gyrolet.mpvrx.ui.icons.Icons.RoundedFilled.Delete,
-                  androidx.compose.ui.res.stringResource(R.string.audiobook_delete_bookmark))
-              }
-            }
-          },
         )
       } else {
         // Observe playlist updates
@@ -811,4 +771,53 @@ private fun rememberQualityDownloadAction(viewModel: PlayerViewModel): ((TrackNo
       locationPicker.launch(null)
     }
   }
+}
+
+@Composable
+private fun ChaptersSheetWithBookmarks(
+  viewModel: app.gyrolet.mpvrx.ui.player.PlayerViewModel,
+  chapters: ImmutableList<Segment>,
+  chapter: Segment?,
+  onSeekToChapter: (Int) -> Unit,
+  onShowSheet: (Sheets) -> Unit,
+  onDismissRequest: () -> Unit,
+) {
+  val bookmarks by viewModel.playbackBookmarks.composeCollectAsState()
+  val mediaId by viewModel.bookmarkMediaId.composeCollectAsState()
+  val scope = rememberCoroutineScope()
+  val context = LocalContext.current
+  var deleting by remember(mediaId) { mutableStateOf(false) }
+  ChaptersSheet(
+    chapters = chapters,
+    currentChapter = chapter,
+    onClick = { onSeekToChapter(chapters.indexOf(it)) },
+    onDismissRequest = onDismissRequest,
+    itemActions = { segment ->
+      bookmarks.firstOrNull { it.mediaId == mediaId && it.title == segment.name && viewModel.bookmarkPositionMs(it) / 1000f == segment.start }?.let { bookmark ->
+        androidx.compose.material3.IconButton(enabled = !deleting, onClick = {
+          if (viewModel.preparePlaybackBookmark(bookmark)) onShowSheet(Sheets.BookmarkEditor)
+        }) {
+          app.gyrolet.mpvrx.ui.icons.Icon(app.gyrolet.mpvrx.ui.icons.Icons.RoundedFilled.Edit,
+            androidx.compose.ui.res.stringResource(R.string.audiobook_bookmark_name))
+        }
+        androidx.compose.material3.IconButton(enabled = !deleting, onClick = {
+          deleting = true
+          scope.launch {
+            try {
+              viewModel.deletePlaybackBookmark(bookmark)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+              throw cancelled
+            } catch (_: Exception) {
+              Toast.makeText(context, R.string.playback_bookmark_update_failed, Toast.LENGTH_SHORT).show()
+            } finally {
+              deleting = false
+            }
+          }
+        }) {
+          app.gyrolet.mpvrx.ui.icons.Icon(app.gyrolet.mpvrx.ui.icons.Icons.RoundedFilled.Delete,
+            androidx.compose.ui.res.stringResource(R.string.audiobook_delete_bookmark))
+        }
+      }
+    },
+  )
 }
