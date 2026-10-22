@@ -240,7 +240,7 @@ fun GestureHandler(
   var twoFingerTapCount by remember { mutableStateOf(0) }
   var lastTwoFingerTapTime by remember { mutableStateOf(0L) }
   var lastTwoFingerTapSide by remember { mutableStateOf<String?>(null) }
-  val twoFingerTapTimeout = 400L
+  val twoFingerTapTimeout = 550L
 
   LaunchedEffect(twoFingerTapCount) {
     if (twoFingerTapCount > 0) {
@@ -344,11 +344,14 @@ fun GestureHandler(
             var maxPointers = 1
             var firstFingerMoved = false
             var secondFingerMoved = false
+            var isCancelled = false
             val firstPos = firstDown.position
             var secondPos = androidx.compose.ui.geometry.Offset.Zero
             var secondDownTime = 0L
+            var secondDownId: androidx.compose.ui.input.pointer.PointerId? = null
             var twoFingersSimultaneous = false
-            val touchSlopSq = 40f * 40f
+            val touchSlop = viewConfiguration.touchSlop.coerceAtLeast(60f)
+            val touchSlopSq = touchSlop * touchSlop
 
             do {
               val event = awaitPointerEvent()
@@ -359,12 +362,15 @@ fun GestureHandler(
                 maxPointers = pressedCount
               }
 
-              if (pressedCount == 2) {
+              if (pressedCount >= 2) {
                 twoFingersSimultaneous = true
                 if (secondDownTime == 0L) {
                   secondDownTime = System.currentTimeMillis()
-                  val other = pressed.firstOrNull { it.id != firstDown.id } ?: pressed[1]
-                  secondPos = other.position
+                  val other = pressed.firstOrNull { it.id != firstDown.id } ?: pressed.getOrNull(1)
+                  if (other != null) {
+                    secondDownId = other.id
+                    secondPos = other.position
+                  }
                 }
               }
 
@@ -373,24 +379,27 @@ fun GestureHandler(
                   val dx = change.position.x - firstPos.x
                   val dy = change.position.y - firstPos.y
                   if (dx * dx + dy * dy > touchSlopSq) firstFingerMoved = true
-                } else if (secondDownTime != 0L) {
+                } else if (secondDownId != null && change.id == secondDownId) {
                   val dx = change.position.x - secondPos.x
                   val dy = change.position.y - secondPos.y
                   if (dx * dx + dy * dy > touchSlopSq) secondFingerMoved = true
                 }
               }
 
-              if (maxPointers > 2 || firstFingerMoved || secondFingerMoved) {
-                break
+              if (maxPointers > 3 || firstFingerMoved || secondFingerMoved) {
+                isCancelled = true
               }
             } while (event.changes.any { it.pressed })
 
             val totalDuration = System.currentTimeMillis() - firstDownTime
-            val isValidTwoFingerTap = twoFingersSimultaneous &&
-              maxPointers == 2 &&
+            val stagger = if (secondDownTime > 0L) Math.abs(secondDownTime - firstDownTime) else 0L
+            val isValidTwoFingerTap = !isCancelled &&
+              twoFingersSimultaneous &&
+              maxPointers <= 3 &&
               !firstFingerMoved &&
               !secondFingerMoved &&
-              totalDuration in 30L..350L
+              stagger <= 250L &&
+              totalDuration in 20L..550L
 
             if (isValidTwoFingerTap) {
               val midX = if (secondPos != androidx.compose.ui.geometry.Offset.Zero) {
@@ -404,7 +413,7 @@ fun GestureHandler(
 
               if (twoFingerDoubleTapToSkip) {
                 val timeSinceLast = now - lastTwoFingerTapTime
-                if (twoFingerTapCount == 1 && timeSinceLast < twoFingerTapTimeout && lastTwoFingerTapSide == side) {
+                if (twoFingerTapCount == 1 && timeSinceLast in 40L..550L && lastTwoFingerTapSide == side) {
                   twoFingerTapCount = 0
                   lastTwoFingerTapTime = 0L
                   lastTwoFingerTapSide = null
@@ -467,11 +476,15 @@ fun GestureHandler(
 
             // Track for potential drag
             var isDrag = false
+            var isMultiTouch = false
             var wasConsumedByTapGesture = false
             var wasOwnedByAnotherGesture = gestureOwner != null
 
             do {
               val event = awaitPointerEvent()
+              if (event.changes.count { it.pressed } >= 2) {
+                isMultiTouch = true
+              }
               val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
               if (gestureOwner != null) wasOwnedByAnotherGesture = true
 
@@ -494,6 +507,7 @@ fun GestureHandler(
                 // Pointer lifted - this is a tap if it wasn't a drag
                 if (
                   !isDrag &&
+                  !isMultiTouch &&
                   !wasConsumedByTapGesture &&
                   !wasOwnedByAnotherGesture &&
                   !gestureClaimedForPointer
@@ -1415,24 +1429,15 @@ fun GestureHandler(
                         if (panAndZoomEnabled && sw > 0f && sh > 0f) {
                           val currentZoom = viewModel.videoZoom.value
                           val scale = 2f.pow(currentZoom)
-                          val extraWidth = (scale - 1f) * sw
-                          val extraHeight = (scale - 1f) * sh
-                          val maxX = (extraWidth / 2f).coerceAtLeast(0f)
-                          val maxY = (extraHeight / 2f).coerceAtLeast(0f)
-                          val scaleRatio = scale / previousScale
-                          val centerX = sw / 2f
-                          val centerY = sh / 2f
-
-                          currentPanX =
-                            (
-                              midX - centerX -
-                                (prevMidX - centerX - currentPanX) * scaleRatio
-                            ).coerceIn(-maxX, maxX)
-                          currentPanY =
-                            (
-                              midY - centerY -
-                                (prevMidY - centerY - currentPanY) * scaleRatio
-                            ).coerceIn(-maxY, maxY)
+                          val va = PlaybackSession.getPropertyDouble("video-params/aspect")?.toFloat() ?: (sw / sh)
+                          val sa = sw / sh
+                          val (bw, bh) = if (va >= sa) sw to (sw / va) else (sh * va) to sh
+                          val panSensitivity = 2.2f
+                          currentPanX += ((midX - prevMidX) * panSensitivity) / (bw * scale)
+                          currentPanY += ((midY - prevMidY) * panSensitivity) / (bh * scale)
+                          val maxPan = ((scale - 1f) / (2f * scale)).coerceAtLeast(0f)
+                          currentPanX = currentPanX.coerceIn(-maxPan, maxPan)
+                          currentPanY = currentPanY.coerceIn(-maxPan, maxPan)
                           viewModel.setVideoPan(currentPanX, currentPanY)
                         }
                       }

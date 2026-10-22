@@ -35,7 +35,6 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
@@ -60,6 +59,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.constraintlayout.widget.ConstraintLayout
@@ -75,7 +75,6 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import androidx.lifecycle.withStarted
 import app.gyrolet.mpvrx.R
 import app.gyrolet.mpvrx.database.entities.PlaybackStateEntity
 import app.gyrolet.mpvrx.database.entities.PlaylistEntity
@@ -99,11 +98,6 @@ import app.gyrolet.mpvrx.preferences.AppearancePreferences
 import app.gyrolet.mpvrx.preferences.AudioChannels
 import app.gyrolet.mpvrx.preferences.AudioPreferences
 import app.gyrolet.mpvrx.preferences.BrowserPreferences
-import app.gyrolet.mpvrx.domain.media.model.UNKNOWN_VIDEO_ROTATION
-import app.gyrolet.mpvrx.domain.thumbnail.ThumbnailRepository
-import app.gyrolet.mpvrx.domain.thumbnail.getArtwork
-import app.gyrolet.mpvrx.domain.thumbnail.isLocalArtworkSource
-import app.gyrolet.mpvrx.preferences.FoldersPreferences
 import app.gyrolet.mpvrx.preferences.DecoderPreferences
 import app.gyrolet.mpvrx.preferences.MpvConfigOverridePolicy
 import app.gyrolet.mpvrx.preferences.MpvConfigControlledFeatures
@@ -116,7 +110,6 @@ import app.gyrolet.mpvrx.ui.browser.playlist.isAllVideosPlaylist
 import app.gyrolet.mpvrx.ui.cast.CastMediaSnapshot
 import app.gyrolet.mpvrx.ui.cast.CastPlaybackController
 import app.gyrolet.mpvrx.ui.player.controls.PlayerControls
-import app.gyrolet.mpvrx.ui.player.controls.components.panels.toColorHexString
 import app.gyrolet.mpvrx.ui.player.components.VideoAmbientBackground
 import app.gyrolet.mpvrx.ui.player.components.rememberVideoAmbientFrame
 import app.gyrolet.mpvrx.ui.player.ytdlp.YtdlpManager
@@ -130,11 +123,11 @@ import app.gyrolet.mpvrx.utils.media.HttpUtils
 import app.gyrolet.mpvrx.utils.media.JellyfinSessionReporter
 import app.gyrolet.mpvrx.utils.media.MediaUtils
 import app.gyrolet.mpvrx.utils.media.fileExtension
+import app.gyrolet.mpvrx.utils.media.resolveSeekMode
 import app.gyrolet.mpvrx.utils.media.M3UParseResult
 import app.gyrolet.mpvrx.utils.media.M3UParser
 import app.gyrolet.mpvrx.utils.media.PlaybackStateEvents
 import app.gyrolet.mpvrx.utils.media.SharedUrlExtractor
-import app.gyrolet.mpvrx.utils.media.ScopedHiddenFolderScanner
 import app.gyrolet.mpvrx.utils.media.SubtitleOps
 import app.gyrolet.mpvrx.utils.media.listTreeFilesSafely
 import app.gyrolet.mpvrx.utils.media.openPersistedTreeDocument
@@ -168,6 +161,8 @@ import org.koin.android.ext.android.inject
 import okhttp3.OkHttpClient
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 private enum class BackgroundPlaybackStartResult {
@@ -283,8 +278,6 @@ class PlayerActivity :
    * Preferences for browser settings.
    */
   private val browserPreferences: BrowserPreferences by inject()
-  private val thumbnailRepository: ThumbnailRepository by inject()
-  private val foldersPreferences: FoldersPreferences by inject()
 
   /**
    * Preferences for appearance settings.
@@ -453,24 +446,16 @@ class PlayerActivity :
   private var pendingBackgroundTransition = false
   private var pendingBackNavigationBackgroundTransition = false
   private var returnToBrowserAfterMinimize = false
-  private var predictivePlayerSheetDrag: PlayerSheetDrag? = null
-  private var predictivePlayerSheetRestoreJob: Job? = null
-  // The player shrinks itself into the mini player before finishing; see PlayerSheetTransitions.
-  private var sheetCollapse = SheetCollapse.NONE
-  private var finishAfterSheetCollapse = false
-  private var backPressHandlerInstalled = false
   private var noisyReceiverRegistered = false
+  private var lastVid = -1 // Track video track for background playback optimization
   private var isInBackgroundPlayback = false // Track if we are currently in background playback mode
   private var screenStateReceiverRegistered = false
   private var mpvInitialized = false // Track MPV initialization state
   private var viewModelHostAttached = false
   private var torrentPickerHandoff = false
   private var savePlaybackStateJob: Job? = null // Track ongoing save job
-  private var lastImmediatePlaybackStateSnapshot: PlaybackStateSnapshot? = null
-  private var backgroundPlaybackShutdownIssued = false
   private var wasPlayingBeforePause = false // Track if video was playing before pause
   private var resumeAfterUnlockJob: Job? = null
-  private var rendererRecoveryWakeLock: PowerManager.WakeLock? = null
   private var jellyfinSessionReporter: JellyfinSessionReporter? = null
   private var jellyfinProgressJob: Job? = null
   private val screenUnlockPlaybackController = ScreenUnlockPlaybackController()
@@ -480,9 +465,6 @@ class PlayerActivity :
   private var deferredMpvAssetSyncJob: Job? = null
   private var mpvAssetPreparationJob: Job? = null
   private var mpvCorePreparationJob: Deferred<String?>? = null
-  private var playerCreationJob: Job? = null
-  private var playerControlsReady by mutableStateOf(false)
-  private var playerControlsComposed = false
   private var systemBarsAutoHideJob: Job? = null
   private var videoParamRefreshJob: Job? = null
   private var intentSubtitleJob: Job? = null
@@ -503,6 +485,26 @@ class PlayerActivity :
   private var currentPlayableUri: String? = null // Store current URI for notification re-entry
   private val playbackRenderDispatcher = Dispatchers.Main
   private val mediaLoadDispatcher = Dispatchers.Default.limitedParallelism(1)
+
+  // Captured at Activity construction. Cookies are only ever written by the cookie jar itself, so
+  // a cookie file newer than this is already current for every load in this session.
+  private val sessionStartedAtMillis = System.currentTimeMillis()
+
+  // PackageManager.getPackageInfo() and the first SharedPreferences read both hit disk; neither
+  // changes while the Activity is alive, so both are resolved once.
+  @Volatile private var cachedLongVersionCode: Long? = null
+  private val assetSyncPreferences: android.content.SharedPreferences by lazy {
+    getSharedPreferences(MPV_ASSET_SYNC_PREFERENCES, MODE_PRIVATE)
+  }
+
+  // Last value written to MPV for the subtitle/video-filter properties that are also applied as
+  // init OPTIONS, so FILE_LOADED only re-issues a write when the preference actually changed.
+  @Volatile private var lastAppliedMpvStyleProperties: MutableMap<String, Any> = mutableMapOf()
+
+  // getMediaIdentifier()/getLegacyMediaIdentifier() run back-to-back on the same intent URI and
+  // resolveLocalPath() queries the ContentResolver; share the single query between them.
+  @Volatile private var memoizedLocalPathKey: String? = null
+  @Volatile private var memoizedLocalPath: String? = null
 
   // ==================== Background Playback ====================
 
@@ -661,9 +663,6 @@ class PlayerActivity :
 
   override fun onCreate(savedInstanceState: Bundle?) {
     applyInitialVideoOrientation(intent)
-    if (intent.action == MediaPlaybackService.ACTION_OPEN_PLAYER) {
-      applyLiveSessionOrientation(isAudioHint = intent.getBooleanExtra("is_audio", false))
-    }
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     // Kick the multi-MB asset copy and the user mpv.conf SAF walk off the main thread first, so
@@ -672,9 +671,9 @@ class PlayerActivity :
     // Derive every init option value up front on IO. Only the option writes themselves need the
     // core, so this overlaps with layout inflation and the Compose trees.
     player.prepareInitInputs()
-    val animateSheet =
+    val animateArtwork =
       intent.action == MediaPlaybackService.ACTION_OPEN_PLAYER &&
-        PlayerSheetTransitions.motion?.destination == PlayerSheetDestination.FULL
+        PlayerArtworkTransitions.motion?.destination == PlayerArtworkDestination.FULL
     val launchSource = intent.getStringExtra("launch_source")
     val isMusicLibraryLaunch =
       launchSource == "music_library" ||
@@ -682,7 +681,7 @@ class PlayerActivity :
         launchSource == "music_shuffle"
     val enterAnimation =
       when {
-        animateSheet || (launchSource == "mini_player" && PlayerSheetTransitions.reducedMotion) -> 0
+        animateArtwork -> 0
         intent.action == MediaPlaybackService.ACTION_OPEN_PLAYER || isMusicLibraryLaunch -> R.anim.slide_in_up
         else -> android.R.anim.fade_in
       }
@@ -722,34 +721,9 @@ class PlayerActivity :
     setupSystemBarsAutoHide()
     setupPipHelper()
 
-    if (intent.action == MediaPlaybackService.ACTION_OPEN_PLAYER) {
-      // Draw the held mini-player pose while preparation runs, without blocking the UI thread.
-      if (animateSheet) setupPlayerControls(ready = false)
-      // Back may arrive before the live session is attached; it must still return to the mini
-      // player instead of falling through to the platform's Activity close animation.
-      setupBackPressHandler()
-      playerCreationJob = lifecycleScope.launch {
-        val initError = awaitMpvCorePreparation()
-        lifecycle.withStarted {
-          if (isFinishing || isDestroyed || !ownsPlaybackSession()) return@withStarted
-          if (initError == null && reusingPlaybackSessionOnLaunch) {
-            MediaPlaybackService.prepareForActivityHandoff()
-          }
-          completePlayerCreation(initError)
-          if (!mpvInitialized || isFinishing) return@withStarted
-          onPlaybackStarted()
-          if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) onPlaybackResumed()
-        }
-      }
-    } else {
-      completePlayerCreation(runBlocking { awaitMpvCorePreparation() })
-    }
-  }
-
-  private fun completePlayerCreation(initError: String?) {
     // A detached background session belongs to PlaybackSession, not to the old Activity.
     // Notification re-entry attaches this new surface to that live core without reloading it.
-    val setupResult = setupMPV(initError)
+    val setupResult = setupMPV()
     if (setupResult != null) {
       isUserFinishing = true
       Toast.makeText(this, getString(R.string.toast_playback_load_failed) + ": " + setupResult, Toast.LENGTH_LONG).show()
@@ -824,11 +798,11 @@ class PlayerActivity :
       }
     }
 
-    // Autoplay and visible navigation controls independently need a sibling queue.
+    // Only auto-generate playlist from folder if playlist mode is enabled and no playlist_id
     if (playlist.isEmpty() &&
       playlistId == null &&
       !intent.hasExtra(AudiobookPlayback.EXTRA_BOOK_ID) &&
-      playerPreferences.shouldBuildAutomaticQueue(isKnownAudioLaunch(intent)) &&
+      playerPreferences.playlistMode.get() &&
       !hasReusableSavedPlaybackSession
     ) {
       val path = parsePathFromIntent(intent)
@@ -897,26 +871,14 @@ class PlayerActivity :
     setupPlayerControls()
     setupAudioPlayerViewObserver()
     setupMediaSession()
-    lifecycleScope.launch {
-      thumbnailRepository.cacheRevision.drop(1).collect {
-        backgroundServiceSyncJob?.cancel()
-        lastBackgroundThumbnailKey = null
-        lastBackgroundThumbnail = null
-        pendingBackgroundThumbnailKey = null
-        syncBackgroundPlaybackService(updateThumbnail = true)
-      }
-    }
     observePlaybackSessionQueue()
     observeTorrentStreamingState()
     setupCastPlayback()
 
     // Video mode waits for mpv geometry; every other preference is decidable now. Audio launches
     // always decide now. In the waiting case applyInitialVideoOrientation already ran before
-    // super.onCreate() with the intent's geometry. A live session already has geometry, so
-    // re-entry from the mini player refines its remembered orientation immediately.
-    if (attachedToCurrentSession || isKnownAudioLaunch(intent) ||
-      playerPreferences.orientation.get() != PlayerOrientation.Video
-    ) {
+    // super.onCreate() with the intent's geometry.
+    if (isKnownAudioLaunch(intent) || playerPreferences.orientation.get() != PlayerOrientation.Video) {
       setOrientation()
     }
 
@@ -977,20 +939,16 @@ class PlayerActivity :
   }
 
   private fun setupBackPressHandler() {
-    if (backPressHandlerInstalled) return
-    backPressHandlerInstalled = true
     // Always own Back inside PlayerActivity. Letting a plain video fall through to the
     // platform back implementation can defer finish() behind an Activity exit transition,
     // leaving libmpv audio audible after the player UI has already started disappearing.
     val callback =
       object : OnBackPressedCallback(true) {
         override fun handleOnBackStarted(backEvent: BackEventCompat) {
-          if (sheetCollapse != SheetCollapse.NONE) return
           applyPredictiveBackProgress(backEvent)
         }
 
         override fun handleOnBackProgressed(backEvent: BackEventCompat) {
-          if (sheetCollapse != SheetCollapse.NONE) return
           applyPredictiveBackProgress(backEvent)
         }
 
@@ -999,26 +957,10 @@ class PlayerActivity :
         }
 
         override fun handleOnBackPressed() {
-          // Already shrinking into the mini player; a second Back must not restart the hand-off.
-          if (sheetCollapse != SheetCollapse.NONE) return
-          val sheetDrag = predictivePlayerSheetDrag
-          predictivePlayerSheetDrag = null
+          // Do not let the predictive-back transform compete with Android's
+          // full-screen-to-PiP surface morph.
           resetPredictiveBackProgress(animate = false)
-          if (!mpvInitialized) {
-            abandonPendingPlayerOpen()
-            // Consumed by the collapse when it started; otherwise it must not outlive this window.
-            sheetDrag?.let(PlayerSheetTransitions::cancelDrag)
-            return
-          }
           handleBackPress()
-          if (sheetDrag != null && PlayerSheetTransitions.drag === sheetDrag) {
-            predictivePlayerSheetRestoreJob = lifecycleScope.launch {
-              if (pendingBackNavigationBackgroundTransition) delay(1_000L)
-              if (PlayerSheetTransitions.drag === sheetDrag) {
-                PlayerSheetTransitions.restoreDrag(sheetDrag, PlayerSheetTransitions.reducedMotion)
-              }
-            }
-          }
         }
       }
 
@@ -1030,26 +972,6 @@ class PlayerActivity :
   }
 
   private fun applyPredictiveBackProgress(backEvent: BackEventCompat) {
-    val sheetGesture =
-      if (mpvInitialized) {
-        isReady && isCurrentPlaybackAudio() && isMiniPlayerEnabled() &&
-          !viewModel.areControlsLocked.value &&
-          viewModel.sheetShown.value == Sheets.None &&
-          viewModel.panelShown.value == Panels.None &&
-          !gesturePreferences.confirmBackToExit.get()
-      } else {
-        canReturnPendingOpenToMiniPlayer()
-      }
-    if (sheetGesture && !PlayerSheetTransitions.reducedMotion) {
-      predictivePlayerSheetRestoreJob?.cancel()
-      val active = predictivePlayerSheetDrag
-        ?: PlayerSheetTransitions.startDrag(PlayerSheetDestination.FULL, PlaybackSession.state.value.currentItem?.stableId)
-      if (active != null) {
-        predictivePlayerSheetDrag = active
-        active.expansion = 1f - backEvent.progress.coerceIn(0f, 1f)
-        return
-      }
-    }
     val root = binding.root
     val width = root.width
     val height = root.height
@@ -1071,17 +993,6 @@ class PlayerActivity :
   }
 
   private fun resetPredictiveBackProgress(animate: Boolean = true) {
-    predictivePlayerSheetRestoreJob?.cancel()
-    predictivePlayerSheetDrag?.let { active ->
-      predictivePlayerSheetDrag = null
-      if (animate && !PlayerSheetTransitions.reducedMotion && ValueAnimator.areAnimatorsEnabled()) {
-        predictivePlayerSheetRestoreJob = lifecycleScope.launch {
-          PlayerSheetTransitions.restoreDrag(active, reduceMotion = false)
-        }
-      } else {
-        PlayerSheetTransitions.cancelDrag(active)
-      }
-    }
     binding.root.animate().cancel()
     binding.controls.animate().cancel()
     if (!animate || !ValueAnimator.areAnimatorsEnabled()) {
@@ -1119,7 +1030,6 @@ class PlayerActivity :
     return when (startBackgroundPlayback()) {
       BackgroundPlaybackStartResult.Started -> {
         pendingBackNavigationBackgroundTransition = true
-        startSheetCollapse()
         completePendingBackgroundHandoff()
         true
       }
@@ -1204,7 +1114,6 @@ class PlayerActivity :
       when (startBackgroundPlayback()) {
         BackgroundPlaybackStartResult.Started -> {
           pendingBackNavigationBackgroundTransition = true
-          startSheetCollapse()
           completePendingBackgroundHandoff()
         }
         BackgroundPlaybackStartResult.PendingPermission -> {
@@ -1261,42 +1170,17 @@ class PlayerActivity :
    * An input arriving inside that one-frame window is not lost: every tap and key path already sets
    * `viewModel.controlsShown`, which the tree reads when it mounts, so the controls still appear.
    */
-  private fun setupPlayerControls(ready: Boolean = true) {
-    if (ready && !playerControlsReady) {
-      playerControlsReady = true
-      lifecycleScope.launch {
-        // HDR shader/color-space changes can invalidate the sample even when the same TextureView
-        // remains attached. React to the mode separately from the surface selection.
-        var previousHdrSignature: Pair<Boolean, HdrScreenMode>? = null
-        combine(
-          appearancePreferences.liquidGlassEnabled.changes(),
-          decoderPreferences.hdrScreenOutput.changes(),
-          decoderPreferences.hdrScreenMode.changes(),
-          appearancePreferences.liquidGlassInHdr.changes(),
-        ) { glass, hdr, hdrMode, glassInHdr ->
-          Triple(
-            shouldUseTextureRendering(liquidGlass = glass, hdrOutput = hdr, liquidGlassInHdr = glassInHdr),
-            hdr,
-            hdrMode,
-          )
-        }.distinctUntilChanged().collect { (useTexture, hdr, hdrMode) ->
-          val hdrSignature = hdr to hdrMode
-          if (previousHdrSignature != null && previousHdrSignature != hdrSignature) {
-            player.invalidateTextureFrameReadiness()
-          }
-          previousHdrSignature = hdrSignature
-          player.setTextureRendering(useTexture)
-        }
-      }
-    }
-    if (playerControlsComposed) return
-    playerControlsComposed = true
-    fun composeControls() {
-      if (isDestroyed || isFinishing) return
+  private fun setupPlayerControls() {
+    binding.controls.postOnAnimation {
+      if (isDestroyed || isFinishing) return@postOnAnimation
       binding.controls.setContent {
         MpvrxTheme {
           Box(modifier = Modifier.fillMaxSize()) {
-            if (playerControlsReady) {
+            Box(
+              modifier = Modifier.fillMaxSize().graphicsLayer {
+                alpha = PlayerArtworkTransitions.contentAlpha(PlayerArtworkDestination.FULL)
+              },
+            ) {
               PlayerControls(
                 viewModel = viewModel,
                 onBackPress = ::handleBackPress,
@@ -1304,19 +1188,10 @@ class PlayerActivity :
                 modifier = Modifier,
               )
             }
-            PlayerSheetTransitionOverlay(
-              PlayerSheetDestination.FULL,
-              contentReady = playerControlsReady,
-              onMinimize = ::minimizeFromHandOff,
-            )
+            PlayerArtworkTransitionOverlay(PlayerArtworkDestination.FULL)
           }
         }
       }
-    }
-    if (PlayerSheetTransitions.motion?.destination == PlayerSheetDestination.FULL) {
-      composeControls()
-    } else {
-      binding.controls.postOnAnimation { composeControls() }
     }
   }
 
@@ -1356,8 +1231,6 @@ class PlayerActivity :
       val isAudioOnly by viewModel.isAudioOnly.collectAsState()
       val playbackState by PlaybackSession.state.collectAsState()
       val videoCrop by PlaybackSession.propString["video-crop"].collectAsState()
-      val aspectOverride by PlaybackSession.propString["video-aspect-override"].collectAsState()
-      val panscan by PlaybackSession.propFloat["panscan"].collectAsState()
       val hdrScreenMode by viewModel.hdrScreenMode.collectAsState()
       val orientation = LocalConfiguration.current.orientation
       val playbackReady =
@@ -1366,7 +1239,6 @@ class PlayerActivity :
         enabled &&
           lifecycleActive &&
           style == AmbientStyle.YouTube &&
-          !MpvConfigOverridePolicy.ownsAny(MpvConfigControlledFeatures.AMBIENT) &&
           !isAudioOnly &&
           !isAmbientPipMode &&
           playbackReady &&
@@ -1393,20 +1265,16 @@ class PlayerActivity :
             }
           },
         )
-      // Keep the player Surface geometry stable for the entire Ambient presentation. A captured
-      // frame can be temporarily unavailable while ImageReader swaps buffers; treating that as an
-      // Ambient-off transition made the Surface bounce between fitted and MATCH_PARENT sizes,
-      // forcing BLAST/libmpv reconfiguration and visible black flashes.
-      val presentationActive = active && ambientFrame.supported
+      val presentationActive = active && ambientFrame.supported && ambientFrame.frame != null
 
       // Auto-crop changes after playback becomes ready. Refreshing on the property itself keeps
       // YouTube Ambient's SurfaceView aligned with the newly cropped content rectangle.
-      LaunchedEffect(presentationActive, videoCrop, aspectOverride, panscan) {
+      LaunchedEffect(presentationActive, videoCrop) {
         setVideoAmbientPresentationActive(presentationActive)
       }
 
       MpvrxTheme {
-        if (presentationActive && ambientFrame.frame != null) {
+        if (presentationActive) {
           VideoAmbientBackground(
             frame = ambientFrame.frame,
             baseColor = ambientFrame.base,
@@ -1437,14 +1305,6 @@ class PlayerActivity :
     val videoAspect = VideoAspectGeometry.currentEffectiveDisplayAspect()
     if (containerWidth <= 0 || containerHeight <= 0 || videoAspect == null || videoAspect <= 0.0) return
 
-    val geometry = AmbientGeometry.calculate(
-      containerWidth, containerHeight, videoAspect,
-      panscan = PlaybackSession.getPropertyDouble("panscan") ?: 0.0,
-    ) ?: return
-    if (!geometry.hasBars) {
-      restoreFullSizePlayerBounds()
-      return
-    }
     val containerAspect = containerWidth.toDouble() / containerHeight.toDouble()
     val videoWidth: Int
     val videoHeight: Int
@@ -1490,44 +1350,22 @@ class PlayerActivity :
   }
 
   private fun setupVideoTransformObserver() {
-    binding.player.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoTransform() }
     lifecycleScope.launch {
       repeatOnLifecycle(Lifecycle.State.STARTED) {
         combine(
           viewModel.videoZoom,
           viewModel.videoPanX,
           viewModel.videoPanY,
-          playerPreferences.overlaysFollowVideoZoom.changes(),
-        ) { _, _, _, _ -> Unit }.collect { applyVideoTransform() }
+        ) { zoom, panX, panY ->
+          Triple(zoom, panX, panY)
+        }.collect { (_, _, _) ->
+          binding.player.scaleX = 1f
+          binding.player.scaleY = 1f
+          binding.player.translationX = 0f
+          binding.player.translationY = 0f
+        }
       }
     }
-  }
-
-  private fun applyVideoTransform() {
-    val zoom = viewModel.videoZoom.value
-    val panX = viewModel.videoPanX.value
-    val panY = viewModel.videoPanY.value
-    // A SurfaceView transform zooms video, libass subtitles and mpv's OSD as one composited image;
-    // mpv's video-zoom moves only the video plane and leaves overlays where they are.
-    val followVideo = playerPreferences.overlaysFollowVideoZoom.get()
-    val viewScale = if (followVideo) videoZoomMultiplier(zoom) else 1f
-    binding.player.scaleX = viewScale
-    binding.player.scaleY = viewScale
-    binding.player.translationX = if (followVideo) panX else 0f
-    binding.player.translationY = if (followVideo) panY else 0f
-    if (!canIssueMpvCommands()) return
-    val (mpvPanX, mpvPanY) = if (followVideo) {
-      0f to 0f
-    } else {
-      val aspect = (PlaybackSession.getPropertyDouble("video-out-params/aspect")
-        ?: PlaybackSession.getPropertyDouble("video-params/aspect") ?: 0.0).toFloat()
-      videoPanFractions(player.width.toFloat(), player.height.toFloat(), aspect, zoom, panX, panY)
-    }
-    PlaybackSession.setPropertyFloat("video-zoom", if (followVideo) 0f else zoom)
-    PlaybackSession.setPropertyFloat("video-pan-x", mpvPanX)
-    PlaybackSession.setPropertyFloat("video-pan-y", mpvPanY)
-    viewModel.onAmbientGeometryChanged()
-    applySubtitleBlendMode()
   }
 
   private fun setupAudioPlayerViewObserver() {
@@ -1747,8 +1585,6 @@ class PlayerActivity :
       return
     }
 
-    // Some keyguards report unlocked only after onStart/onResume and SCREEN_ON have returned.
-    restoreForegroundVideoAndAmbientIfUnlocked()
     if (shouldAutoHideSystemBars()) {
       scheduleSystemBarsAutoHide(delayMs = 250L)
     }
@@ -1773,7 +1609,6 @@ class PlayerActivity :
   }
 
   override fun onDestroy() {
-    releaseRendererRecoveryWakeLock()
     Log.d(TAG, "PlayerActivity onDestroy")
     val ownsPlaybackSession = ownsPlaybackSession()
     val playbackWasInitialized = mpvInitialized
@@ -1782,13 +1617,11 @@ class PlayerActivity :
     }
     val pipDismissalCommitted = handledPipDismissal
     pendingPipExitResolution = false
-    val pendingHandoffReturned = ownsPlaybackSession && restorePendingPlayerHandoff()
     val keepBackgroundPlaybackAlive =
-      ownsPlaybackSession && !scriptRuntimeRestartPending && !pipDismissalCommitted &&
-        (pendingHandoffReturned || PlayerLifecyclePolicy.shouldKeepBackgroundPlaybackAliveOnDestroy(
-          backgroundPlaybackEnabled = playbackWasInitialized && isBackgroundPlaybackEnabled(),
-          backgroundPlaybackSessionActive = isBackgroundPlaybackSessionActive,
-        ))
+      ownsPlaybackSession && !scriptRuntimeRestartPending && !pipDismissalCommitted && PlayerLifecyclePolicy.shouldKeepBackgroundPlaybackAliveOnDestroy(
+        backgroundPlaybackEnabled = playbackWasInitialized && isBackgroundPlaybackEnabled(),
+        backgroundPlaybackSessionActive = isBackgroundPlaybackSessionActive,
+      )
 
 
     runCatching {
@@ -1845,21 +1678,6 @@ class PlayerActivity :
     }
   }
 
-  private fun restorePendingPlayerHandoff(): Boolean {
-    if (mpvInitialized || playerCreationJob == null || !reusingPlaybackSessionOnLaunch ||
-      !MediaPlaybackService.isNotificationOwnerReady() || PlaybackSession.state.value.currentItem == null
-    ) return false
-    MediaPlaybackService.activityForeground = false
-    PlaybackSession.markBackground()
-    if (!MediaPlaybackService.takeAudioOwnershipForDetachedPlayback()) {
-      Log.w(TAG, "Could not return audio ownership after pending player handoff")
-    }
-    PlayerSheetTransitions.motion?.takeIf { it.destination == PlayerSheetDestination.FULL }?.let {
-      PlayerSheetTransitions.finish(it.id)
-    }
-    return true
-  }
-
   private fun cleanupMPV(
     keepBackgroundPlaybackAlive: Boolean,
     ownsPlaybackSession: Boolean,
@@ -1870,9 +1688,6 @@ class PlayerActivity :
     player.isExiting = true
     mpvInitialized = false
     player.onSurfaceReady = null
-    // Cancel seek and shader workers before the Android Surface disappears. Otherwise a pending
-    // native command can restart MediaCodec after its output surface has already been detached.
-    viewModel.prepareForPlayerTeardown()
     intentSubtitleJob?.cancel()
     videoParamRefreshJob?.cancel()
     backgroundServiceSyncJob?.cancel()
@@ -1888,17 +1703,15 @@ class PlayerActivity :
     runCatching { PlaybackSession.removeObserver(playerObserver) }
       .onFailure { e -> Log.e(TAG, "Error removing MPV observer", e) }
 
+    runCatching { player.releaseSurface() }
+      .onFailure { e -> Log.e(TAG, "Error releasing MPV surface", e) }
+
     if (!ownsPlaybackSession) {
-      runCatching { player.releaseSurface() }
-        .onFailure { e -> Log.e(TAG, "Error releasing MPV surface", e) }
       Log.d(TAG, "Skipping shared MPV teardown from a superseded PlayerActivity")
       return
     }
 
-
     if (!keepBackgroundPlaybackAlive) {
-      // Start the terminal stop while the Surface is still valid. This closes the window where a
-      // late seek/video-reconfig could construct MediaCodec with a null native window.
       viewModel.onMpvCoreStopping()
       MediaPlaybackService.prepareForMpvShutdown()
       if (!pipDismissalCommitted) {
@@ -1908,9 +1721,6 @@ class PlayerActivity :
     } else {
       PlaybackSession.markBackground()
     }
-
-    runCatching { player.releaseSurface() }
-      .onFailure { e -> Log.e(TAG, "Error releasing MPV surface", e) }
   }
 
   private fun observePlaybackSessionQueue() {
@@ -2085,8 +1895,6 @@ class PlayerActivity :
       super.finish()
       return
     }
-    // finish() already ran and is only waiting for the sheet to reach the mini player.
-    if (finishAfterSheetCollapse) return
     runCatching {
       if (wasInPipMode && !isChangingConfigurations) commitPipDismissal()
 
@@ -2113,96 +1921,12 @@ class PlayerActivity :
       Log.e(TAG, "Error during finish", e)
     }
 
-    val handsOffToMiniPlayer = isBackgroundPlaybackSessionActive && isMiniPlayerEnabled()
-    when {
-      sheetCollapse == SheetCollapse.RUNNING -> finishAfterSheetCollapse = true
-      sheetCollapse == SheetCollapse.ARRIVED -> completeFinish(sheetArrived = true)
-      handsOffToMiniPlayer && startSheetCollapse() -> finishAfterSheetCollapse = true
-      else -> {
-        // Keeps the mini player present even when this media uses the native window animation.
-        if (handsOffToMiniPlayer) {
-          PlayerSheetTransitions.holdCollapsed(PlaybackSession.state.value.currentItem?.stableId)
-        }
-        completeFinish(sheetArrived = false)
-      }
-    }
-  }
-
-  /**
-   * Starts shrinking this player into the mini player while the playback service takes over.
-   * The morph runs here, where everything is already drawn, so MainActivity only has to appear
-   * once the sheet rests at the mini player; [finish] waits for that before closing the window.
-   */
-  private fun startSheetCollapse(): Boolean {
-    if (sheetCollapse != SheetCollapse.NONE) return true
-    if (!isMiniPlayerEnabled() || isTaskRoot || !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return false
-    val started = PlayerSheetTransitions.begin(
-      PlayerSheetDestination.MINI,
-      PlaybackSession.state.value.currentItem?.stableId,
-    ) { arrived ->
-      sheetCollapse = if (arrived) SheetCollapse.ARRIVED else SheetCollapse.NONE
-      if (finishAfterSheetCollapse) {
-        finishAfterSheetCollapse = false
-        completeFinish(sheetArrived = arrived)
-      }
-    }
-    if (started) {
-      predictivePlayerSheetRestoreJob?.cancel()
-      predictivePlayerSheetDrag = null
-      sheetCollapse = SheetCollapse.RUNNING
-    }
-    return started
-  }
-
-  /** The service could not take over playback; grow back into the full player. */
-  private fun cancelSheetCollapse() {
-    if (sheetCollapse == SheetCollapse.NONE) return
-    sheetCollapse = SheetCollapse.NONE
-    finishAfterSheetCollapse = false
-    PlaybackSession.state.value.currentItem?.stableId?.let(PlayerSheetTransitions::releaseCollapsedHold)
-    PlayerSheetTransitions.reverseCollapse()
-  }
-
-  /** Reopened from the mini player, still showing its hand-off sheet over the live session. */
-  private fun canReturnPendingOpenToMiniPlayer(): Boolean =
-    !mpvInitialized && reusingPlaybackSessionOnLaunch && playerControlsComposed &&
-      MediaPlaybackService.isNotificationOwnerReady()
-
-  /**
-   * Back or swipe-down before the reopened player has attached to the live session. The service
-   * still owns playback, so shrink straight back into the mini player instead of closing through
-   * a window animation; onStop returns the session to it via [restorePendingPlayerHandoff].
-   */
-  private fun abandonPendingPlayerOpen(): Boolean {
-    if (mpvInitialized || isFinishing || isDestroyed) return false
-    if (sheetCollapse != SheetCollapse.NONE) return true
-    val returnsToMiniPlayer = canReturnPendingOpenToMiniPlayer()
-    val stillDetached = reusingPlaybackSessionOnLaunch && MediaPlaybackService.isNotificationOwnerReady()
-    // The creation must never take the session over while the sheet is already leaving.
-    playerCreationJob?.cancel()
-    when {
-      returnsToMiniPlayer && startSheetCollapse() -> finishAfterSheetCollapse = true
-      stillDetached -> {
-        PlayerSheetTransitions.holdCollapsed(PlaybackSession.state.value.currentItem?.stableId)
-        completeFinish(sheetArrived = false)
-      }
-      else -> finish()
-    }
-    return true
-  }
-
-  /** Swipe-down on the hand-off sheet, before or while the live controls take over. */
-  private fun minimizeFromHandOff(): Boolean =
-    if (mpvInitialized) minimizeToMiniPlayer() else abandonPendingPlayerOpen()
-
-  private fun completeFinish(sheetArrived: Boolean) {
-    if (isFinishing) return
-    if (sheetArrived) PlayerSheetTransitions.motion?.let { PlayerSheetTransitions.holdParked(it.id) }
+    val animateArtwork = isBackgroundPlaybackSessionActive && isMiniPlayerEnabled() &&
+      PlayerArtworkTransitions.begin(PlayerArtworkDestination.MINI, PlaybackSession.state.value.currentItem?.stableId)
     super.finish()
 
     if (isMiniPlayerEnabled()) {
-      // The window already shows the browser and mini player, so it must vanish without motion.
-      val exitAnimation = if (sheetArrived || PlayerSheetTransitions.reducedMotion) 0 else R.anim.slide_out_down
+      val exitAnimation = if (animateArtwork) 0 else R.anim.slide_out_down
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
         overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, exitAnimation)
       } else {
@@ -2246,7 +1970,6 @@ class PlayerActivity :
   }
 
   override fun onStop() {
-    releaseRendererRecoveryWakeLock()
     if (scriptRuntimeRestartPending) {
       super.onStop()
       return
@@ -2262,10 +1985,7 @@ class PlayerActivity :
     MediaPlaybackService.activityForeground = false
     runCatching {
       pipHelper.onStop()
-      if (!mpvInitialized) {
-        restorePendingPlayerHandoff()
-        return@runCatching
-      }
+      if (!mpvInitialized) return@runCatching
 
       if (noisyReceiverRegistered) {
         unregisterReceiver(noisyReceiver)
@@ -2324,20 +2044,6 @@ class PlayerActivity :
       }
     }.onFailure { e ->
       Log.e(TAG, "Error during onStop", e)
-    }
-
-    // SurfaceView receives surfaceDestroyed when Android reclaims its renderer. Keep a valid
-    // paused native Surface across Recents instead of gratuitously resetting the decoder.
-    // TextureView, screen-off, Activity finish, and active background audio still detach.
-    val screenLocked = isDeviceScreenOffOrLocked()
-    val releaseStoppedRenderer = player.isTextureSurface || screenLocked ||
-      isFinishing || isUserFinishing ||
-      (isBackgroundPlaybackSessionActive && viewModel.paused != true)
-    if (mpvInitialized && ownsPlaybackSession() &&
-      (!isInPictureInPictureMode || screenLocked) && releaseStoppedRenderer
-    ) {
-      runCatching { player.releaseSurface() }
-        .onFailure { Log.e(TAG, "Could not release stopped playback surface", it) }
     }
 
     super.onStop()
@@ -2410,6 +2116,8 @@ class PlayerActivity :
     viewModel.restartAmbientIfActive()
   }
 
+  fun getCurrentPlayableUriForLookup(): String? = currentPlayableUri ?: intent?.dataString
+
   private fun finishStoppedBackgroundPlaybackIfNeeded(): Boolean {
     if (!mpvInitialized || !ownsPlaybackSession() || !isBackgroundPlaybackSessionActive ||
       isFinishing || isDestroyed || scriptRuntimeRestartPending
@@ -2431,13 +2139,9 @@ class PlayerActivity :
 
   override fun onStart() {
     super.onStart()
-    onPlaybackStarted()
-  }
-
-  private fun onPlaybackStarted() {
     if (!mpvInitialized || !ownsPlaybackSession()) return
     if (finishStoppedBackgroundPlaybackIfNeeded()) return
-    MediaPlaybackService.activityForeground = !isDeviceScreenOffOrLocked()
+    MediaPlaybackService.activityForeground = true
 
     runCatching {
       setupWindowFlags()
@@ -2901,9 +2605,6 @@ class PlayerActivity :
     PlaybackActivityOwner.beginRequest(playbackOwnerToken) {
       lastExitBackPressAtMs = null
       mediaRequestGeneration++
-      videoParamRefreshJob?.cancel()
-      videoParamRefreshJob = null
-      pendingVideoParamRefreshRequiresShaderReload = false
     }
 
   private fun isCurrentMediaRequest(requestGeneration: Long): Boolean =
@@ -2935,17 +2636,32 @@ class PlayerActivity :
    * Initializes the MPV player with the necessary paths and observers.
    * CRITICAL: Must copy config and scripts BEFORE initializing MPV, as MPV loads scripts during init.
    */
-  private fun setupMPV(initError: String?): String? {
-    if (initError != null) return initError
+  private fun setupMPV(): String? {
+    // Asset preparation and MPVLib.init() were already started on IO. The main thread waits only
+    // for the portion that did not overlap Android window/surface setup.
+    val waitStartedAt = android.os.SystemClock.elapsedRealtime()
     player.onSurfaceReady = {
-      releaseRendererRecoveryWakeLock()
-      if (!isDeviceScreenOffOrLocked()) {
+      if (!isDeviceScreenOffOrLocked() && (isInBackgroundPlayback || lastVid > 0)) {
         enableVideoAfterBackground()
       }
       viewModel.restartPostProcessingIfActive()
       viewModel.restartAmbientIfActive()
       binding.root.post(::updateVideoAmbientPlayerBounds)
     }
+
+    val corePreparation = mpvCorePreparationJob
+    val initError =
+      if (corePreparation != null) {
+        runCatching { runBlocking { corePreparation.await() } }
+          .getOrElse { error ->
+            Log.e(TAG, "Could not initialize MPV", error)
+            error.message ?: getString(R.string.toast_playback_load_failed)
+          }
+      } else {
+        initializeMpvCore()
+      }
+    Log.d(TAG, "MPV core joined in ${android.os.SystemClock.elapsedRealtime() - waitStartedAt} ms")
+    if (initError != null) return initError
 
     // SurfaceHolder and View callbacks stay on the main thread even though the native core was
     // prepared in parallel.
@@ -2959,21 +2675,6 @@ class PlayerActivity :
 
     scheduleDeferredSubtitleFontsSync()
     return null
-  }
-
-  private suspend fun awaitMpvCorePreparation(): String? {
-    val waitStartedAt = android.os.SystemClock.elapsedRealtime()
-    return try {
-      val preparation = mpvCorePreparationJob
-      if (preparation != null) preparation.await() else withContext(Dispatchers.IO) { initializeMpvCore() }
-    } catch (error: CancellationException) {
-      throw error
-    } catch (error: Exception) {
-      Log.e(TAG, "Could not initialize MPV", error)
-      error.message ?: getString(R.string.toast_playback_load_failed)
-    } finally {
-      Log.d(TAG, "MPV core prepared in ${android.os.SystemClock.elapsedRealtime() - waitStartedAt} ms")
-    }
   }
 
   /** Starts native initialization once the launch has been validated and session handoff decided. */
@@ -3016,7 +2717,7 @@ class PlayerActivity :
 
   private fun prepareUserMpvAssetsForStartup() {
     ensureConfigCacheForStartup()
-    val syncPreferences = getSharedPreferences(MPV_ASSET_SYNC_PREFERENCES, MODE_PRIVATE)
+    val syncPreferences = assetSyncPreferences
     val currentSelection = currentUserMpvAssetSelection()
     val storedSelection = syncPreferences.getString(USER_MPV_ASSET_SELECTION, null)
     val cacheReady = hasLaunchReadyUserMpvAssetCache()
@@ -3370,11 +3071,8 @@ class PlayerActivity :
   }
 
   private fun syncBundledAssetsIfNeeded() {
-    val syncPrefs = getSharedPreferences("mpv_asset_sync", MODE_PRIVATE)
-    val currentVersion =
-      runCatching {
-        PackageInfoCompat.getLongVersionCode(packageManager.getPackageInfo(packageName, 0))
-      }.getOrDefault(-1L)
+    val syncPrefs = assetSyncPreferences
+    val currentVersion = longVersionCode()
 
     val assetsAlreadyPrepared =
       File(filesDir, "mpv.conf").exists() &&
@@ -3388,6 +3086,13 @@ class PlayerActivity :
     Utils.copyAssets(this@PlayerActivity)
     syncPrefs.edit().putLong("bundled_assets_version", currentVersion).apply()
   }
+
+  /** The installed version cannot change while this Activity exists, so it is resolved once. */
+  private fun longVersionCode(): Long =
+    cachedLongVersionCode
+      ?: runCatching {
+        PackageInfoCompat.getLongVersionCode(packageManager.getPackageInfo(packageName, 0))
+      }.getOrDefault(-1L).also { cachedLongVersionCode = it }
 
   private fun scheduleDeferredSubtitleFontsSync() {
     deferredFontSyncJob?.cancel()
@@ -3423,7 +3128,7 @@ class PlayerActivity :
           deferredFontSyncJob?.join()
           syncFromUserMpvDirectory()
           syncSubtitleFontsFromPreferenceFolder()
-          rememberUserMpvAssetSelection(getSharedPreferences(MPV_ASSET_SYNC_PREFERENCES, MODE_PRIVATE))
+          rememberUserMpvAssetSelection(assetSyncPreferences)
           completed = true
           Log.d(TAG, "Refreshed cached MPV user assets after startup")
         } catch (cancellation: CancellationException) {
@@ -3774,11 +3479,6 @@ class PlayerActivity :
 
   override fun onResume() {
     super.onResume()
-    app.gyrolet.mpvrx.ui.preferences.LauncherIconManager.refreshTaskIcon(this)
-    onPlaybackResumed()
-  }
-
-  private fun onPlaybackResumed() {
     if (!mpvInitialized || !ownsPlaybackSession()) return
     if (!isInPictureInPictureMode && hasWindowFocus()) completePipExpansion()
     restoreForegroundVideoAndAmbientIfUnlocked()
@@ -3845,38 +3545,9 @@ class PlayerActivity :
     return keyguardManager.isDeviceLocked || !powerManager.isInteractive
   }
 
-  /**
-   * CPU stays awake only for bounded foreground renderer recovery. A partial wake lock cannot
-   * preserve Android's Surface and must not run during long paused background playback.
-   */
-  private fun acquireRendererRecoveryWakeLock() {
-    if (isDeviceScreenOffOrLocked() || isCurrentPlaybackAudio() || player.isSurfaceReady) return
-    runCatching {
-      val wakeLock = rendererRecoveryWakeLock ?: (getSystemService(POWER_SERVICE) as PowerManager)
-        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:foreground-renderer-recovery")
-        .apply { setReferenceCounted(false) }
-        .also { rendererRecoveryWakeLock = it }
-      if (!wakeLock.isHeld) wakeLock.acquire(RENDERER_RECOVERY_WAKE_TIMEOUT_MS)
-    }.onFailure { Log.w(TAG, "Unable to acquire renderer recovery wake lock", it) }
-  }
-
-  private fun releaseRendererRecoveryWakeLock() {
-    runCatching { rendererRecoveryWakeLock?.let { if (it.isHeld) it.release() } }
-      .onFailure { Log.w(TAG, "Unable to release renderer recovery wake lock", it) }
-  }
-
   private fun restoreForegroundVideoAndAmbientIfUnlocked(): Boolean {
     if (!mpvInitialized || !ownsPlaybackSession() || isDeviceScreenOffOrLocked()) return false
-    if (!MediaPlaybackService.activityForeground) {
-      MediaPlaybackService.activityForeground = true
-      if (viewModel.paused != true) requestAudioFocus()
-    }
-    if (!player.isSurfaceReady) acquireRendererRecoveryWakeLock()
-    player.attachSessionSurface()
     enableVideoAfterBackground()
-    // If SurfaceView survived in Recents, no new creation callback will arrive.
-    player.refreshPausedFrameAfterForegroundReturn()
-    if (player.isSurfaceReady) releaseRendererRecoveryWakeLock()
     viewModel.setAmbientLifecycleActive(true)
     updateKeepScreenOn()
     return true
@@ -3920,7 +3591,7 @@ class PlayerActivity :
    * Processes intent extras to set initial playback position, subtitles, and HTTP headers.
    *
    * This method checks the intent extras for the following keys:
-   * - "position": The initial playback position in milliseconds.
+   * - "position": The initial playback position in seconds.
    * - "subs": A list of subtitle URIs to add.
    * - "subs.enable": A list of subtitle URIs to enable.
    * - "headers": A list of HTTP headers to set for network playback.
@@ -3932,7 +3603,7 @@ class PlayerActivity :
 
     extras.getInt("position", POSITION_NOT_SET).takeIf { it != POSITION_NOT_SET }?.let {
       intent.removeExtra("position")
-      PlaybackSession.setPropertyDouble("time-pos", it / MILLISECONDS_TO_SECONDS.toDouble())
+      PlaybackSession.setPropertyInt("time-pos", it / MILLISECONDS_TO_SECONDS)
     }
 
     addSubtitlesFromExtras(extras)
@@ -4204,6 +3875,30 @@ class PlayerActivity :
     }
   }
 
+  /**
+   * Gets the display title for a playlist item URI.
+   * If Room metadata exists for the current playlist, the stored playlist item title wins.
+   *
+   * @param uri The URI to get the title for
+   * @return The display name/title of the file
+   */
+  internal fun getPlaylistItemTitle(uri: Uri): String {
+    getPlaylistItemByUri(uri)?.fileName?.takeIf { it.isNotBlank() }?.let { return it }
+
+    val idx = playlist.indexOf(uri)
+    if (idx != -1 && idx < networkPlaylistTitles.size) {
+      networkPlaylistTitles[idx].takeIf { it.isNotBlank() }?.let { return it }
+    }
+
+    // Try content resolver first for content:// URIs
+    getDisplayNameFromUri(uri)?.let { return it }
+
+    // Extract filename from URL/URI
+    return extractFileNameFromUri(uri)
+  }
+
+  internal fun getPlaylistItemTvgLogo(index: Int): String? = playlistItems.getOrNull(index)?.tvgLogo
+
   private fun getPlaylistItemByIndex(index: Int): PlaylistItemEntity? = playlistItems.getOrNull(index)
 
   private fun getPlaylistItemByUri(uri: Uri): PlaylistItemEntity? {
@@ -4298,9 +3993,11 @@ class PlayerActivity :
 
     val duration =
       PlaybackSession.getPropertyDouble("duration")
+        ?: PlaybackSession.getPropertyInt("duration")?.toDouble()
     val position =
       if (duration != null && duration > 0.0) {
         PlaybackSession.getPropertyDouble("time-pos")
+          ?: PlaybackSession.getPropertyInt("time-pos")?.toDouble()
       } else {
         null
       }
@@ -4403,12 +4100,21 @@ class PlayerActivity :
       viewModel.showToast(getString(R.string.toast_playback_load_failed))
       return null
     }
-    return if (uri.startsWith("content://")) {
-      // Preserve a reusable queue URI; never store a one-shot file descriptor.
-      uri.toUri().openContentFd(this, allowFdFallback = false) ?: uri
-    } else {
-      uri
+    // PlaybackSession.resolvePlayableUri performs exactly this content:// resolution on its worker
+    // thread for every load, so it is deliberately NOT repeated here on the main thread: the queue
+    // item keeps the content:// URI (never a single-use fd://, which a replay could not reuse)
+    // and PlaybackSession resolves it, opening a fresh descriptor per load.
+    return uri
+  }
+
+  /** One ContentResolver query per Activity for the intent URI both identifier builders resolve. */
+  private fun resolveLocalPathMemoized(uri: Uri): String? {
+    val key = uri.toString()
+    if (memoizedLocalPathKey != key) {
+      memoizedLocalPath = uri.resolveLocalPath(this)
+      memoizedLocalPathKey = key
     }
+    return memoizedLocalPath
   }
 
   /**
@@ -4453,11 +4159,10 @@ class PlayerActivity :
     when (property) {
       "video-params/w",
       "video-params/h",
-      "video-params/rotate",
       -> {
         // Safety check: don't access MPV during cleanup
         if (!mpvInitialized || player.isExiting || isFinishing) return
-        scheduleVideoParamRefresh(reloadShaders = property != "video-params/rotate")
+        scheduleVideoParamRefresh(reloadShaders = true)
       }
     }
   }
@@ -4529,8 +4234,7 @@ class PlayerActivity :
       return
     }
     if (isAdvancingAtEof) return
-    // Enabling background playback while watching does not transfer EOF ownership to the service.
-    if (!MediaPlaybackService.activityForeground) return
+    if (isBackgroundPlaybackSessionActive || !MediaPlaybackService.activityForeground) return
     // A dropped network stream can drain the demuxer and flip eof-reached mid-file. Only a
     // position at (or within a couple of seconds of) the known duration is a real end.
     val durationSecs = viewModel.duration ?: 0
@@ -4550,7 +4254,7 @@ class PlayerActivity :
     val autoplay = isAudiobook || if (isAudio) playerPreferences.autoplayNextAudio.get() else playerPreferences.autoplayNextVideo.get()
     val repeatAll = repeatMode == RepeatMode.ALL
 
-    if (playlist.size > 1 || PlaybackSession.queue.value.isExplicitQueue) {
+    if (playlist.isNotEmpty()) {
       val hasNext = PlaybackSession.hasNext()
       if ((autoplay && hasNext) || repeatAll) {
         isAdvancingAtEof = true
@@ -4561,19 +4265,14 @@ class PlayerActivity :
       return
     }
 
-    if (autoplay || repeatAll) {
+    if (playerPreferences.playlistMode.get() && (autoplay || repeatAll)) {
       val path = parsePathFromIntent(intent)
       if (path != null) {
-        val requestGeneration = mediaRequestGeneration
-        val playbackGeneration = PlaybackSession.state.value.generation
         isAdvancingAtEof = true
         eofAdvanceJob =
           lifecycleScope.launch(Dispatchers.IO) {
-            generatePlaylistFromFolderInternal(path, requestGeneration)
+            generatePlaylistFromFolderInternal(path)
             withContext(Dispatchers.Main) {
-              if (!isCurrentMediaRequest(requestGeneration) ||
-                !PlaybackSession.isCurrentGeneration(playbackGeneration)
-              ) return@withContext
               val hasNext = PlaybackSession.hasNext()
               when {
                 (autoplay && hasNext) || (repeatAll && playlist.isNotEmpty()) -> playNextQueueItem()
@@ -4668,17 +4367,32 @@ class PlayerActivity :
       }
       "container-fps" -> {
         if (!mpvInitialized || player.isExiting || isFinishing) return
-        // MPVView owns display-rate negotiation so a Surface callback and the property event cannot
-        // submit the same frame-rate request twice.
-        player.updateFrameRate(value)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R && value > 0.0) {
+          try {
+            val surface = player.holder?.surface
+            if (surface != null && surface.isValid) {
+              surface.setFrameRate(
+                value.toFloat(),
+                android.view.Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+              )
+              android.util.Log.i(TAG, "Set display refresh rate to ${value}Hz")
+            }
+          } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to set frame rate", e)
+          }
+        }
+      }
+      "sub-scale" -> {
+        if (isSecondarySubtitleActive()) {
+          val primaryPosition = subtitlesPreferences.subPos.get()
+          applySubtitlePositions(primaryPosition)
+        }
       }
     }
   }
 
   @Synchronized
   private fun scheduleVideoParamRefresh(reloadShaders: Boolean) {
-    val generation = PlaybackSession.state.value.generation
-    val requestGeneration = mediaRequestGeneration
     pendingVideoParamRefreshRequiresShaderReload =
       pendingVideoParamRefreshRequiresShaderReload ||
       reloadShaders
@@ -4688,15 +4402,12 @@ class PlayerActivity :
       lifecycleScope.launch {
         delay(100)
         if (!mpvInitialized || player.isExiting || isFinishing) return@launch
-        if (!isCurrentMediaRequest(requestGeneration) || !PlaybackSession.isCurrentGeneration(generation)) return@launch
 
         val aspect =
           withContext(playbackRenderDispatcher) {
-            player.getVideoOutAspect(generation)
+            player.getVideoOutAspect()
           }
-        if (!isCurrentMediaRequest(requestGeneration) || !PlaybackSession.isCurrentGeneration(generation)) return@launch
         Log.d(TAG, "Coalesced video params refresh, aspect: $aspect")
-        PlayerOrientationPolicy.rememberVideoAspect(PlaybackSession.state.value.currentItem?.stableId, aspect)
         pipHelper.updatePictureInPictureParams()
 
         setOrientation(aspect)
@@ -4870,6 +4581,10 @@ class PlayerActivity :
 
     lifecycleScope.launch(Dispatchers.IO) {
       try {
+        if (!MpvConfigOverridePolicy.ownsAny(MpvConfigControlledFeatures.VIDEO_ZOOM)) {
+          PlaybackSession.setPropertyDouble("video-zoom", 0.0)
+        }
+
         // Load playback state (will skip track restoration if preferred language configured)
         val hasState =
           loadVideoPlaybackState(
@@ -4884,16 +4599,23 @@ class PlayerActivity :
         // Apply track selection logic (defaults only apply when no saved state)
         trackSelector.onFileLoaded(hasState)
 
-        // Apply default zoom only if there's no saved state
+        // Apply default zoom, pan, and advanced zoom only if there's no saved state
         if (!hasState) {
           withContext(Dispatchers.Main) {
             if (!PlaybackSession.isCurrentGeneration(loadGeneration)) return@withContext
             val zoomPreference = playerPreferences.defaultVideoZoom.get()
             viewModel.setVideoZoom(zoomPreference)
+            val panXPreference = playerPreferences.defaultVideoPanX.get()
+            val panYPreference = playerPreferences.defaultVideoPanY.get()
+            if (panXPreference != 0f || panYPreference != 0f) {
+              viewModel.setVideoPan(panXPreference, panYPreference)
+            }
+            if (playerPreferences.advancedZoomEnabled.get()) {
+              viewModel.setAdvancedZoomEnabled(true)
+              viewModel.setVideoScaleX(playerPreferences.defaultVideoScaleX.get())
+              viewModel.setVideoScaleY(playerPreferences.defaultVideoScaleY.get())
+            }
           }
-        }
-        withContext(Dispatchers.Main) {
-          if (PlaybackSession.isCurrentGeneration(loadGeneration)) applyVideoTransform()
         }
       } finally {
         PlaybackSession.completePositionRestore(loadGeneration)
@@ -5079,7 +4801,28 @@ class PlayerActivity :
 
           // Update recently played with the parsed video title, duration, and file size
           val filePath =
-            filePathForUri(uri)
+            when (uri.scheme) {
+              "file" -> uri.path ?: uri.toString()
+              "content" -> {
+                contentResolver
+                  .query(
+                    uri,
+                    arrayOf(MediaStore.MediaColumns.DATA),
+                    null,
+                    null,
+                    null,
+                  )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                      val columnIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                      if (columnIndex != -1) cursor.getString(columnIndex) else null
+                    } else {
+                      null
+                    }
+                  } ?: uri.toString()
+              }
+
+              else -> uri.toString()
+            }
 
           // Get duration and file size from MPV on Main thread
           var updatedDuration = 0L
@@ -5168,28 +4911,41 @@ class PlayerActivity :
     // Miscellaneous settings
     val scaleByWindow = subtitlesPreferences.scaleByWindow.get()
     val scaleValue = if (scaleByWindow) "yes" else "no"
+    val subScale = subtitlesPreferences.subScale.get()
+    val secondarySubScale = subtitlesPreferences.secondarySubScale.get()
+    val blendMode =
+      if (subtitlesPreferences.blendSubtitlesWithVideo.get() &&
+        playerPreferences.isAmbientEnabled.get()
+      ) {
+        "video"
+      } else {
+        "no"
+      }
 
-    // Ambient Mode can change this property independently of subtitle preferences, so the helper
-    // compares the effective mpv value instead of forcing a write on every preference refresh.
-    applySubtitleBlendMode()
+    // blend-subtitles is also written by the ambient enable/disable path, so it stays a forced
+    // write. Everything below is already applied as an init OPTION by MPVView.initOptions and is
+    // only re-issued here when the preference value actually changed, so mpv does not redo its
+    // OSD/style reconfiguration on the frame the player becomes ready for every load.
+    PlaybackSession.setPropertyString("blend-subtitles", blendMode)
 
-    PlaybackSession.setPropertyInt("sub-font-size", fontSize)
+    setMpvStyleIntIfChanged("sub-font-size", fontSize)
     // Official mpv only has secondary-sub-delay/scale/pos/ass-override; secondary inherits primary style.
-    PlaybackSession.setPropertyString("sub-font", font)
-    PlaybackSession.setPropertyBoolean("sub-bold", bold)
-    PlaybackSession.setPropertyBoolean("sub-italic", italic)
-    PlaybackSession.setPropertyString("sub-justify", justify)
-    PlaybackSession.setPropertyString("sub-border-style", borderStyle)
-    PlaybackSession.setPropertyInt("sub-border-size", borderSize)
-    PlaybackSession.setPropertyInt("sub-outline-size", borderSize)
-    PlaybackSession.setPropertyInt("sub-shadow-offset", shadowOffset)
-    PlaybackSession.setPropertyString("sub-color", textColor)
-    PlaybackSession.setPropertyString("sub-border-color", borderColor)
-    PlaybackSession.setPropertyString("sub-back-color", backgroundColor)
-    PlaybackSession.setPropertyString("sub-shadow-color", shadowColor)
-    PlaybackSession.setPropertyString("sub-scale-by-window", scaleValue)
-    PlaybackSession.setPropertyString("sub-use-margins", scaleValue)
-    applySubtitleScales()
+    setMpvStyleStringIfChanged("sub-font", font)
+    setMpvStyleBooleanIfChanged("sub-bold", bold)
+    setMpvStyleBooleanIfChanged("sub-italic", italic)
+    setMpvStyleStringIfChanged("sub-justify", justify)
+    setMpvStyleStringIfChanged("sub-border-style", borderStyle)
+    setMpvStyleIntIfChanged("sub-border-size", borderSize)
+    setMpvStyleIntIfChanged("sub-outline-size", borderSize)
+    setMpvStyleIntIfChanged("sub-shadow-offset", shadowOffset)
+    setMpvStyleStringIfChanged("sub-color", textColor)
+    setMpvStyleStringIfChanged("sub-border-color", borderColor)
+    setMpvStyleStringIfChanged("sub-back-color", backgroundColor)
+    setMpvStyleStringIfChanged("sub-shadow-color", shadowColor)
+    setMpvStyleStringIfChanged("sub-scale-by-window", scaleValue)
+    setMpvStyleStringIfChanged("sub-use-margins", scaleValue)
+    setMpvStyleFloatIfChanged("sub-scale", subScale)
+    setMpvStyleFloatIfChanged("secondary-sub-scale", secondarySubScale)
 
     applySubtitleLayout(
       primaryPosition = subtitlesPreferences.subPos.get(),
@@ -5205,33 +4961,45 @@ class PlayerActivity :
   private fun applyVideoFilterPreferences() {
     if (viewModel.isAudioOnly.value || isCurrentMediaKnownAudio()) return
     VideoFilters.entries.forEach {
-      PlaybackSession.setPropertyInt(it.mpvProperty, it.preference(decoderPreferences).get())
+      setMpvStyleIntIfChanged(it.mpvProperty, it.preference(decoderPreferences).get())
     }
     Log.d(TAG, "Applied video filter preferences")
   }
 
-  /** Filesystem path for file:// and MediaStore content:// URIs, otherwise the URI string. */
-  private fun filePathForUri(uri: Uri): String =
-    when (uri.scheme) {
-      "file" -> uri.path ?: uri.toString()
-      "content" ->
-        if (app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY) {
-          // A provider grant authorizes the URI, not its potentially inaccessible _data path.
-          uri.toString()
-        } else {
-          contentResolver
-            .query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)
-            ?.use { cursor ->
-              if (cursor.moveToFirst()) {
-                val columnIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
-                if (columnIndex != -1) cursor.getString(columnIndex) else null
-              } else {
-                null
-              }
-            } ?: uri.toString()
-        }
-      else -> uri.toString()
-    }
+  /** True when [value] differs from what was last written, recording it as applied. */
+  private fun recordMpvStylePropertyIfChanged(name: String, value: Any): Boolean {
+    val applied = lastAppliedMpvStyleProperties
+    if (applied[name] == value) return false
+    applied[name] = value
+    return true
+  }
+
+  private fun setMpvStyleIntIfChanged(name: String, value: Int) {
+    if (recordMpvStylePropertyIfChanged(name, value)) PlaybackSession.setPropertyInt(name, value)
+  }
+
+  private fun setMpvStyleFloatIfChanged(name: String, value: Float) {
+    if (recordMpvStylePropertyIfChanged(name, value)) PlaybackSession.setPropertyFloat(name, value)
+  }
+
+  private fun setMpvStyleBooleanIfChanged(name: String, value: Boolean) {
+    if (recordMpvStylePropertyIfChanged(name, value)) PlaybackSession.setPropertyBoolean(name, value)
+  }
+
+  private fun setMpvStyleStringIfChanged(name: String, value: String) {
+    if (recordMpvStylePropertyIfChanged(name, value)) PlaybackSession.setPropertyString(name, value)
+  }
+
+  /**
+   * Helper extension function to convert Int color to hex string for MPV
+   */
+  private fun Int.toColorHexString(): String {
+    val a = (this shr 24 and 0xFF).toString(16).padStart(2, '0')
+    val r = (this shr 16 and 0xFF).toString(16).padStart(2, '0')
+    val g = (this shr 8 and 0xFF).toString(16).padStart(2, '0')
+    val b = (this and 0xFF).toString(16).padStart(2, '0')
+    return "#$a$r$g$b".uppercase()
+  }
 
   private fun canIssueMpvCommands(): Boolean = mpvInitialized && !player.isExiting && !isDestroyed
 
@@ -5249,11 +5017,6 @@ class PlayerActivity :
     immediate: Boolean = false,
   ) {
     val snapshot = capturePlaybackStateSnapshot(mediaTitle) ?: return
-    if (immediate && snapshot == lastImmediatePlaybackStateSnapshot) {
-      Log.d(TAG, "Skipping duplicate immediate playback-state save for: ${snapshot.mediaTitle}")
-      return
-    }
-    if (immediate) lastImmediatePlaybackStateSnapshot = snapshot
 
     // Cancel any previous pending save operation
     savePlaybackStateJob?.cancel()
@@ -5277,9 +5040,6 @@ class PlayerActivity :
         playbackStateRepository.upsert(playbackState)
         PlaybackStateEvents.notifyChanged(snapshot.mediaIdentifier)
       }.onFailure { e ->
-        if (immediate && lastImmediatePlaybackStateSnapshot == snapshot) {
-          lastImmediatePlaybackStateSnapshot = null
-        }
         Log.e(TAG, "Error saving playback state", e)
       }
     }
@@ -5354,6 +5114,7 @@ class PlayerActivity :
   ): Int =
     runCatching {
       PlaybackSession.getPropertyDouble(property)?.toInt()
+        ?: PlaybackSession.getPropertyInt(property)
         ?: fallback
     }.getOrDefault(fallback)
 
@@ -5586,7 +5347,33 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
       }
 
       val filePath =
-        filePathForUri(uri)
+        when (uri.scheme) {
+          "file" -> {
+            uri.path ?: uri.toString()
+          }
+
+          "content" -> {
+            contentResolver
+              .query(
+                uri,
+                arrayOf(MediaStore.MediaColumns.DATA),
+                null,
+                null,
+                null,
+              )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                  val columnIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                  if (columnIndex != -1) cursor.getString(columnIndex) else null
+                } else {
+                  null
+                }
+              } ?: uri.toString()
+          }
+
+          else -> {
+            uri.toString()
+          }
+        }
 
       val launchSource =
         when {
@@ -5719,20 +5506,6 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
    */
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
-    val creation = playerCreationJob
-    if (creation?.isActive == true) {
-      lifecycleScope.launch {
-        creation.join()
-        if (mpvInitialized && !isFinishing && !isDestroyed && ownsPlaybackSession()) {
-          processNewIntent(intent)
-        }
-      }
-      return
-    }
-    processNewIntent(intent)
-  }
-
-  private fun processNewIntent(intent: Intent) {
     if (scriptRuntimeRestartPending) {
       if (intent.action !in setOf(
           MediaPlaybackService.ACTION_OPEN_PLAYER,
@@ -5776,8 +5549,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
           isReady = PlaybackSession.state.value.phase == PlaybackPhase.READY
           if (isReady) viewModel.onVideoLoadCompleted()
           applyPlaybackBrightnessPolicy(isAudio = isCurrentMediaKnownAudio())
-          applyLiveSessionOrientation(isAudioHint = isCurrentMediaKnownAudio())
-          setOrientation()
+          if (isCurrentMediaKnownAudio()) setOrientation()
           if (isBackgroundPlaybackEnabled()) {
             if (!serviceBound || mediaPlaybackService == null) {
               startBackgroundPlaybackInternal(bindToActivity = true)
@@ -5821,6 +5593,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     val previousItemWasReady = isReady
 
     setIntent(intent)
+    applyInitialVideoOrientation(intent)
     applyPlaybackBrightnessPolicy(isAudio = isCurrentMediaKnownAudio())
     if (!beginMediaRequest()) return
     cancelPlaybackLoadRecovery()
@@ -5911,10 +5684,8 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
       }
     }
 
-    // Prepare autoplay independently of the next/previous button preference.
-    if (playlist.isEmpty() && playlistId == null &&
-      playerPreferences.shouldBuildAutomaticQueue(isKnownAudioLaunch(intent))
-    ) {
+    // Auto-generate playlist from folder if playlist mode is enabled and no playlist_id
+    if (playlist.isEmpty() && playlistId == null && playerPreferences.playlistMode.get()) {
       val path = parsePathFromIntent(intent)
       if (path != null) {
         generatePlaylistFromFolder(path)
@@ -5959,7 +5730,6 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
         return@let
       }
 
-      applyInitialVideoOrientation(intent)
       currentPlayableUri = uri
       isReady = false
       viewModel.onVideoLoadStarted()
@@ -6149,30 +5919,45 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
                 mimeType = resolvedMimeType,
                 headers = requestedHeaders,
                 networkSource = networkSource,
-                durationSeconds = sourceIntent
-                  .takeIf { it.getBooleanExtra("internal_launch", false) }
-                  ?.getIntExtra("duration", 0)
-                  ?.takeIf { it > 0 },
                 torrentFileIndex = torrentResult?.selectedFile?.index,
               )
 
-          // Prepare YouTube artwork and the cookie jar in load order, before invoking mpv.
-          val itemWithArtwork =
+          // Fetch artwork for music streaming URLs (YouTube / YouTube Music via oEmbed) and stage
+          // libmpv's cookie file. Both are needed before loadfile (the queue item has to carry
+          // artworkUri for the notification, and mpv reads the cookie file when opening the
+          // stream), but neither depends on the other, so they are started together and joined
+          // at their point of use instead of one after the other.
+          val artworkDeferred =
             if (item.artworkUri.isNullOrBlank() && HttpUtils.isMusicStreamingUrl(resolvedOriginalUri)) {
-              val artwork = HttpUtils.fetchMusicStreamingArtwork(resolvedOriginalUri)
-              if (!artwork.isNullOrBlank()) item.copy(artworkUri = artwork) else item
+              async(Dispatchers.IO) { HttpUtils.fetchMusicStreamingArtwork(resolvedOriginalUri) }
             } else {
-              item
+              null
             }
-          val cookieSource =
+          val cookieExportDeferred =
             sequenceOf(resolvedPlayableUri, resolvedOriginalUri)
               .firstOrNull { value -> value.startsWith("http://", true) || value.startsWith("https://", true) }
-          if (cookieSource != null) {
-            androidCookieJar
-              .exportForPlayback(cookieSource, AndroidCookieJar.playbackCookieFile(this@PlayerActivity))
-              .onFailure { error -> Log.w(TAG, "Failed to prepare playback cookies", error) }
-          }
+              ?.let { cookieSource ->
+                // libmpv needs this file before it opens the stream, so the export cannot be deferred
+                // past loadfile. A file already written during this session is current: cookies are
+                // only written by OkHttp/WebView outside this Activity, so re-running the
+                // CookieManager read plus the AtomicFile fsync on every load is pure overhead.
+                if (AndroidCookieJar.playbackCookieFile(this@PlayerActivity).lastModified() >= sessionStartedAtMillis) {
+                  null
+                } else {
+                  async(Dispatchers.IO) {
+                    androidCookieJar
+                      .exportForPlayback(cookieSource, AndroidCookieJar.playbackCookieFile(this@PlayerActivity))
+                      .onFailure { error -> Log.w(TAG, "Failed to prepare playback cookies", error) }
+                  }
+                }
+              }
           ensureCurrentMediaRequest(requestGeneration)
+          val itemWithArtwork =
+            artworkDeferred
+              ?.await()
+              ?.takeIf { it.isNotBlank() }
+              ?.let { artwork -> item.copy(artworkUri = artwork) }
+              ?: item
           if (requestedQueueItem == null || isTorrentRequest) {
             val torrentSeries = torrentResult?.takeIf { it.playableFiles.size > 1 }
             if (torrentSeries != null) {
@@ -6221,6 +6006,8 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
               commitMediaRequest(requestGeneration) { PlaybackSession.replaceQueue(listOf(itemWithArtwork), 0) }
             }
           }
+          // libmpv reads the cookie file as it opens the stream, so this is the last join before loadfile.
+          cookieExportDeferred?.await()
           issuePlaybackLoad(
             item = itemWithArtwork,
             attempt = 0,
@@ -6277,56 +6064,64 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     val restoreSavedPosition = playerPreferences.savePositionOnQuit.get()
     val resumeMode = playerPreferences.resumePlaybackMode.get()
     // Only Always Resume may use the fast load-local start option. Never starts at zero.
-    val initialPositionSeconds =
-      if (effectivePositionOverride != null) {
-        effectivePositionOverride.positionSeconds?.takeIf { it.isFinite() && it > 0.0 }
-      } else if (
+    val needsSavedPositionLookup =
+      effectivePositionOverride == null &&
         restoreSavedPosition &&
         resumeMode == ResumePlaybackMode.Always &&
         !item.isDefinitelyAudioOnly()
-      ) {
-        resolvePlaybackState(item.stableId, legacyMediaIdentifier)
-          ?.lastPosition
-          ?.takeIf { it > 3 }
-          ?.toDouble()
-      } else {
-        null
-      }
     ensureCurrentMediaRequest(requestGeneration)
     val ytdlpSource =
       sequenceOf(item.originalUri, item.playableUri)
         .firstOrNull(YtdlpManager::requiresYtdlp)
     val requiresYtdlp = ytdlpSource != null
-    val ytdlpReady =
-      if (ytdlpSource != null) {
-        YtdlpManager.prepareForPlayback(this, ytdlpSource) { line ->
-          line.trim().takeIf { it.isNotEmpty() }?.let { message -> Log.d(TAG, message) }
+    // The yt-dlp runtime prep (multi-MB runtime copy plus a Python subprocess for web sources),
+    // the previous-session stop wait and the resume-position database read have no ordering
+    // dependency on each other, so they are started together and joined only where their result
+    // is needed: pre-load latency becomes max(...) instead of sum(...).
+    val generation = coroutineScope {
+      val ytdlpReadyDeferred =
+        ytdlpSource?.let { source ->
+          async {
+            YtdlpManager.prepareForPlayback(this@PlayerActivity, source) { line ->
+              line.trim().takeIf { it.isNotEmpty() }?.let { message -> Log.d(TAG, message) }
+            }
+          }
         }
-      } else {
-        true
-      }
-    if (!ytdlpReady) throw IllegalStateException("yt-dlp could not be prepared for web playback")
-    ensureCurrentMediaRequest(requestGeneration)
-    if (!PlaybackSession.awaitStopCompletion()) {
-      throw IllegalStateException("Timed out waiting for previous playback to stop")
-    }
-    ensureCurrentMediaRequest(requestGeneration)
-    if (requiresYtdlp) {
-      player.setupYtdlpOptions()
-    }
-    // Keep the built-in hook loaded across media changes, as in 2.7.2. It ignores local
-    // files and excluded direct URLs itself; toggling ytdl unloads/reloads the Lua script.
-    // Attach the video Surface before loadfile so MediaCodec is created against it. A late
-    // Surface (slow first frame, locked screen) must not fail playback: PlaybackSession then
-    // defers video selection until bindSurface attaches it.
-    if (item.videoSelection() == PlaybackVideoSelection.IMMEDIATE && player.surfaceBindingEnabled) {
-      if (!player.awaitSurfaceReady()) {
-        Log.w(TAG, "Video Surface not attached yet; loading with video selection deferred to attachment")
+      val stopCompletedDeferred = async { PlaybackSession.awaitStopCompletion() }
+      val savedPositionDeferred =
+        if (needsSavedPositionLookup) {
+          async {
+            resolvePlaybackState(item.stableId, legacyMediaIdentifier)
+              ?.lastPosition
+              ?.takeIf { it > 3 }
+              ?.toDouble()
+          }
+        } else {
+          null
+        }
+
+      val initialPositionSeconds =
+        effectivePositionOverride
+          ?.positionSeconds
+          ?.takeIf { it.isFinite() && it > 0.0 }
+          ?: savedPositionDeferred?.await()
+      if (ytdlpReadyDeferred?.await() == false) {
+        throw IllegalStateException("yt-dlp could not be prepared for web playback")
       }
       ensureCurrentMediaRequest(requestGeneration)
-    }
-    val generation =
-      PlaybackSession.load(
+      if (!stopCompletedDeferred.await()) {
+        throw IllegalStateException("Timed out waiting for previous playback to stop")
+      }
+      ensureCurrentMediaRequest(requestGeneration)
+      if (requiresYtdlp) {
+        player.setupYtdlpOptions()
+      } else {
+        // mpv keeps script options on the reused core. Explicitly disable ytdl_hook for local and
+        // direct-media loads so a prior web item cannot leak an extractor probe into this load.
+        PlaybackSession.setIntegrationOptionString("ytdl", "no")
+      }
+      val loadGeneration =
+        PlaybackSession.load(
           item = item,
           restoreSavedPosition = restoreSavedPosition,
           positionRestoreOverride = effectivePositionOverride,
@@ -6337,21 +6132,19 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
               if (requestGeneration != mediaRequestGeneration) {
                 -1L
               } else {
-                // A null per-video override means "use the user-selected yt-dlp settings";
-                // don't erase the format already applied by setupYtdlpOptions().
-                if (requiresYtdlp && ytdlFormat != null) {
-                  PlaybackSession.setPropertyString("ytdl-format", ytdlFormat)
-                }
+                if (requiresYtdlp) PlaybackSession.setPropertyString("ytdl-format", ytdlFormat.orEmpty())
                 nativeLoad()
               }
             }
           },
         )
+      player.applyDeferredStartupOptions()
+      loadGeneration
+    }
     if (generation < 0L) {
       ensureCurrentMediaRequest(requestGeneration)
       throw IllegalStateException("libmpv core is unavailable")
     }
-    player.applyStartupStatistics()
     if (item.audiobook != null) intent.removeExtra(AudiobookPlayback.EXTRA_POSITION_MS)
     if (scriptRestore != null) {
       intent.removeExtra(EXTRA_SCRIPT_RESTORE_MEDIA_ID)
@@ -6567,7 +6360,6 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
 
     isAmbientPipMode = isInPictureInPictureMode
-    viewModel.setAmbientPipActive(isInPictureInPictureMode)
     if (isInPictureInPictureMode) setVideoAmbientPresentationActive(false)
     pipHelper.onPictureInPictureModeChanged(isInPictureInPictureMode)
     if (isInPictureInPictureMode) {
@@ -6707,38 +6499,10 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
           return
         }
         PlayerOrientationPolicy.forPreference(preference) {
-          (sourceAspect ?: player.getVideoOutAspect())?.also { aspect ->
-            PlayerOrientationPolicy.rememberVideoAspect(PlaybackSession.state.value.currentItem?.stableId, aspect)
-          }
+          sourceAspect ?: player.getVideoOutAspect()
         }
       } ?: return
 
-    if (requestedOrientation != target) requestedOrientation = target
-  }
-
-  /**
-   * Re-applies the selected orientation when returning from the mini player or notification.
-   *
-   * That re-entry attaches to the live session with an intent that carries neither media nor
-   * geometry, so the launch-time lookup cannot decide and the new window would keep whatever the
-   * browser used. Runs before super.onCreate() for the same reason as [applyInitialVideoOrientation];
-   * [setOrientation] refines it once the attached core reports live geometry.
-   */
-  private fun applyLiveSessionOrientation(isAudioHint: Boolean) {
-    if (isTelevision) {
-      requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-      return
-    }
-    val item = PlaybackSession.state.value.currentItem ?: PlaybackSession.queue.value.currentItem
-    val isAudio = isAudioHint || item?.declaredMediaKind() == DeclaredPlaybackMediaKind.AUDIO
-    val target =
-      if (isAudio) {
-        PlayerOrientationPolicy.forAudioPreference(audioPreferences.audioOrientation.get())
-      } else {
-        PlayerOrientationPolicy.forPreference(playerPreferences.orientation.get()) {
-          PlayerOrientationPolicy.rememberedVideoAspect(item?.stableId)
-        }
-      } ?: return
     if (requestedOrientation != target) requestedOrientation = target
   }
 
@@ -6755,9 +6519,8 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
    * PlayerActivity handles orientation|screenSize|screenLayout itself, so the late assignment does
    * not recreate the Activity; it relayouts the window mid-transition.
    *
-   * Use only geometry already supplied by the launch intent. Missing metadata must not delay
-   * playback: MediaMetadataRetriever can stall on the same files as thumbnail extraction. The
-   * normal mpv video-parameter observer applies the orientation once complete geometry arrives.
+   * Media library launches carry width/height/rotation in the intent, so this is a pure lookup.
+   * Anything else falls back to MediaMetadataRetriever for the missing fields.
    */
   private fun applyInitialVideoOrientation(sourceIntent: Intent) {
     if (isTelevision) {
@@ -6766,13 +6529,47 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     }
     if (playerPreferences.orientation.get() != PlayerOrientation.Video || isKnownAudioLaunch(sourceIntent)) return
 
-    val width = sourceIntent.getIntExtra(EXTRA_VIDEO_WIDTH, 0)
-    val height = sourceIntent.getIntExtra(EXTRA_VIDEO_HEIGHT, 0)
-    // A missing angle is different from a confirmed zero. Hold the launch configuration until
-    // mpv supplies a complete snapshot instead of guessing landscape from encoded dimensions.
-    val rotation = sourceIntent.getIntExtra(EXTRA_VIDEO_ROTATION, UNKNOWN_VIDEO_ROTATION)
-    val initialOrientation = PlayerOrientationPolicy.forSourceGeometry(width, height, rotation)
-      ?: ActivityInfo.SCREEN_ORIENTATION_LOCKED
+    var width = sourceIntent.getIntExtra(EXTRA_VIDEO_WIDTH, 0)
+    var height = sourceIntent.getIntExtra(EXTRA_VIDEO_HEIGHT, 0)
+    var rotation = sourceIntent.getIntExtra(EXTRA_VIDEO_ROTATION, 0)
+
+    // Only invoke expensive MediaMetadataRetriever synchronously if the intent carried no geometry.
+    if (width <= 0 || height <= 0 || rotation == 0) {
+      extractUriFromIntent(sourceIntent)
+        ?.takeIf { uri -> uri.scheme.equals("content", true) || uri.scheme.equals("file", true) }
+        ?.let { uri ->
+          runCatching {
+            val retriever = android.media.MediaMetadataRetriever()
+            try {
+              retriever.setDataSource(this, uri)
+              if (width <= 0) {
+                width =
+                  retriever
+                    .extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                    ?.toIntOrNull()
+                    ?: 0
+              }
+              if (height <= 0) {
+                height =
+                  retriever
+                    .extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                    ?.toIntOrNull()
+                    ?: 0
+              }
+              if (rotation == 0) {
+                rotation =
+                  retriever
+                    .extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                    ?.toIntOrNull()
+                    ?: 0
+              }
+            } finally {
+              retriever.release()
+            }
+          }
+        }
+    }
+    val initialOrientation = PlayerOrientationPolicy.forSourceGeometry(width, height, rotation) ?: return
     if (requestedOrientation != initialOrientation) requestedOrientation = initialOrientation
   }
 
@@ -7319,13 +7116,12 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     }
 
     Log.d(TAG, "Starting background playback for: $fileName")
-    backgroundPlaybackShutdownIssued = false
 
     // Ensure notification channel exists
     MediaPlaybackService.createNotificationChannel(this)
 
     // Get media info before starting service
-    val artist = runCatching { PlaybackSession.getPropertyString("metadata/by-key/artist") }.getOrNull() ?: ""
+    val artist = runCatching { PlaybackSession.getPropertyString("metadata/artist") }.getOrNull() ?: ""
 
     // Pass media info via intent extras
     val intent =
@@ -7420,11 +7216,6 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
    * Called when the activity is destroyed to remove the notification.
    */
   private fun endBackgroundPlayback(handoffToActivity: Boolean = true) {
-    if (backgroundPlaybackShutdownIssued) {
-      Log.d(TAG, "Background playback service stop already requested")
-      return
-    }
-    backgroundPlaybackShutdownIssued = true
     Log.d(TAG, "Ending background playback service")
     backgroundHandoffJob?.cancel()
     backgroundHandoffJob = null
@@ -7592,7 +7383,6 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
         setActivityMediaSessionActive(true)
         if (failedBackgroundHandoff) {
           returnToBrowserAfterMinimize = false
-          cancelSheetCollapse()
           Toast.makeText(this@PlayerActivity, R.string.toast_playback_load_failed, Toast.LENGTH_LONG).show()
         }
         endBackgroundPlayback()
@@ -7813,7 +7603,28 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
       lifecycleScope.launch(Dispatchers.IO) {
         val playlistItem = getPlaylistItemByUri(uri)
         val filePath =
-          playlistItem?.filePath ?: filePathForUri(uri)
+          playlistItem?.filePath ?: when (uri.scheme) {
+            "file" -> uri.path ?: uri.toString()
+            "content" -> {
+              contentResolver
+                .query(
+                  uri,
+                  arrayOf(MediaStore.MediaColumns.DATA),
+                  null,
+                  null,
+                  null,
+                )?.use { cursor ->
+                  if (cursor.moveToFirst()) {
+                    val columnIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    if (columnIndex != -1) cursor.getString(columnIndex) else null
+                  } else {
+                    null
+                  }
+                } ?: uri.toString()
+            }
+
+            else -> uri.toString()
+          }
 
         runCatching {
           playlistRepository.updatePlayHistory(id, filePath)
@@ -7872,7 +7683,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     val notificationIdentifier = currentNotificationMediaIdentifier()
     val artist =
       currentQueueItem?.artist?.takeIf { it.isNotBlank() }
-        ?: runCatching { PlaybackSession.getPropertyString("metadata/by-key/artist") }.getOrNull().orEmpty()
+        ?: runCatching { PlaybackSession.getPropertyString("metadata/artist") }.getOrNull().orEmpty()
     val thumbnailKey = buildBackgroundThumbnailKey()
     val cachedThumbnail =
       if (thumbnailKey == lastBackgroundThumbnailKey) {
@@ -7903,14 +7714,39 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
           delay(150)
           val generatedThumbnail =
             withContext(Dispatchers.IO) {
-              val source = currentQueueItem?.originalUri ?: currentPlayableUri
-              if (isLocalArtworkSource(source)) {
-                thumbnailRepository.getArtwork(source, isAudio = isCurrentPlaybackAudio(), widthPx = 480)
-              } else {
-                app.gyrolet.mpvrx.domain.thumbnail.EmbeddedArtworkResolver.decodeArtworkUri(
-                  this@PlayerActivity, currentQueueItem?.artworkUri,
-                ) ?: runCatching { PlaybackSession.grabThumbnail(480) }.getOrNull()
-              }
+              app.gyrolet.mpvrx.domain.thumbnail.EmbeddedArtworkResolver.decodeArtworkUri(
+                this@PlayerActivity,
+                currentQueueItem?.artworkUri,
+              ) ?: runCatching { PlaybackSession.grabThumbnail(480) }.getOrNull() ?: runCatching {
+                val uriStr = currentPlayableUri
+                if (!uriStr.isNullOrBlank()) {
+                  val parsedUri = Uri.parse(uriStr)
+                  val cleanPath =
+                    when (parsedUri.scheme) {
+                      null, "file" -> parsedUri.path ?: uriStr
+                      "content" -> null
+                      // Probing a remote/proxied URL opens a second upstream stream that competes
+                      // with live playback and audibly stalls it during Mini Player handoffs.
+                      else -> return@runCatching null
+                    }
+                  val retriever = android.media.MediaMetadataRetriever()
+                  try {
+                    if (cleanPath != null) {
+                      retriever.setDataSource(cleanPath)
+                    } else {
+                      retriever.setDataSource(this@PlayerActivity, parsedUri)
+                    }
+                    app.gyrolet.mpvrx.domain.thumbnail.EmbeddedArtworkResolver.decodeEmbeddedArtwork(
+                      cleanPath,
+                      retriever,
+                    )
+                  } finally {
+                    retriever.release()
+                  }
+                } else {
+                  null
+                }
+              }.getOrNull()
             }
 
           if (!ownsPlaybackSession() || !mpvInitialized || player.isExiting || isFinishing) return@launch
@@ -7934,7 +7770,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
   private fun buildBackgroundThumbnailKey(): String {
     if (mediaIdentifier.isBlank()) return ""
     val artworkUri = PlaybackSession.queue.value.currentItem?.artworkUri.orEmpty()
-    return "$mediaIdentifier|$playlistIndex|$artworkUri|${browserPreferences.thumbnailGenerator.get()}|${thumbnailRepository.cacheRevision.value}"
+    return "$mediaIdentifier|$playlistIndex|$artworkUri"
   }
 
   /**
@@ -8013,7 +7849,33 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
   ) {
     runCatching {
       val filePath =
-        filePathForUri(uri)
+        when (uri.scheme) {
+          "file" -> {
+            uri.path ?: uri.toString()
+          }
+
+          "content" -> {
+            contentResolver
+              .query(
+                uri,
+                arrayOf(MediaStore.MediaColumns.DATA),
+                null,
+                null,
+                null,
+              )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                  val columnIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                  if (columnIndex != -1) cursor.getString(columnIndex) else null
+                } else {
+                  null
+                }
+              } ?: uri.toString()
+          }
+
+          else -> {
+            uri.toString()
+          }
+        }
 
       val isGenericStream =
         name.isBlank() ||
@@ -8125,14 +7987,9 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     }
 
     val sourceUri = extractUriFromIntent(intent)
-    // SAF document URIs are canonical in the Play Store build: a provider path is not a
-    // filesystem path and must use the identical playback key in the player and browser.
-    if (app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY &&
-      sourceUri?.scheme == "content" && DocumentsContract.isDocumentUri(this, sourceUri)
-    ) return PlaybackIdentity.forUri(sourceUri.toString())
     val localPath =
       intent.getStringExtra("local_media_path")?.takeIf { it.isNotBlank() }
-        ?: sourceUri?.resolveLocalPath(this)
+        ?: sourceUri?.let { source -> resolveLocalPathMemoized(source) }
     localPath?.let {
       return PlaybackIdentity.forLocalPath(it)
     }
@@ -8164,12 +8021,9 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
   ): String? {
     val explicitIdentifier = intent.getStringExtra("media_identifier")?.takeIf { it.isNotBlank() }
     val uri = extractUriFromIntent(intent)
-    if (app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY && uri?.scheme == "content" &&
-      DocumentsContract.isDocumentUri(this, uri)
-    ) return PlaybackIdentity.forLocalPath(uri.toString())
     val hasLocalPath =
       intent.getStringExtra("local_media_path")?.isNotBlank() == true ||
-        uri?.resolveLocalPath(this) != null
+        uri?.let { source -> resolveLocalPathMemoized(source) } != null
     if (hasLocalPath) return uri?.toString()?.let(PlaybackIdentity::forUri) ?: explicitIdentifier
     if (explicitIdentifier?.startsWith("media:v2:") == true) return null
     val networkFilePath = intent.getStringExtra("network_file_path")
@@ -8269,14 +8123,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
         PlaybackItem.fromUri(
           uri = uri.toString(),
           stableId =
-            if (networkSource == null &&
-              app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY &&
-              uri.scheme == "content" && DocumentsContract.isDocumentUri(this, uri)
-            ) {
-              PlaybackIdentity.forUri(uri.toString())
-            } else if (networkSource == null) {
-              uri.resolveLocalPath(this)?.let(PlaybackIdentity::forLocalPath)
-            } else null,
+            if (networkSource == null) uri.resolveLocalPath(this)?.let(PlaybackIdentity::forLocalPath) else null,
           title = title,
           artist = existingItem?.artist,
           mimeType =
@@ -8322,10 +8169,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     uri: Uri,
     @Suppress("UNUSED_PARAMETER") fileName: String,
   ): String =
-    (if (app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY &&
-      uri.scheme == "content" && DocumentsContract.isDocumentUri(this, uri)
-    ) PlaybackIdentity.forUri(uri.toString()) else null)
-      ?: uri.resolveLocalPath(this)?.let(PlaybackIdentity::forLocalPath)
+    uri.resolveLocalPath(this)?.let(PlaybackIdentity::forLocalPath)
       ?: NetworkPlaybackUri.parse(uri.toString())
       ?.let { reference -> PlaybackIdentity.forNetwork(reference.connectionId, reference.path.value) }
       ?: PlaybackIdentity.forUri(uri.toString())
@@ -8583,55 +8427,17 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     expectedGeneration: Long = mediaRequestGeneration,
   ): Boolean =
     runCatching {
-      val launchSource = intent.getStringExtra("launch_source") ?: ""
-      val scopedUri =
-        if (app.gyrolet.mpvrx.BuildConfig.SCOPED_STORAGE_ONLY) {
-          Uri.parse(currentPath).takeIf { ScopedHiddenFolderScanner.isScopedFolder(it.toString()) }
-            ?: intent.data?.takeIf { ScopedHiddenFolderScanner.isScopedFolder(it.toString()) }
-        } else {
-          null
-        }
-      val siblingUris =
-        if (scopedUri != null) {
-          val treeUri =
-            DocumentsContract.buildTreeDocumentUri(
-              scopedUri.authority,
-              DocumentsContract.getTreeDocumentId(scopedUri),
-            )
-          val isAudioTarget = isKnownAudioLaunch(intent)
-          val minimumAudioDurationMs = browserPreferences.minimumAudioDurationSeconds.get() * 1000L
-          val videos =
-            ScopedHiddenFolderScanner.getVideos(
-              this,
-              treeUri.toString(),
-              includeAudio = isAudioTarget || browserPreferences.includeAudioBrowser.get(),
-              grantedTreeUris = foldersPreferences.scopedHiddenFolderUris.get(),
-            ).filter { video ->
-              if (isAudioTarget) {
-                video.isAudio && (video.duration <= 0L || video.duration >= minimumAudioDurationMs)
-              } else {
-                !video.isAudio || browserPreferences.includeAudioBrowser.get()
-              }
-            }
-          app.gyrolet.mpvrx.utils.sort.SortUtils.sortVideos(
-            videos,
-            browserPreferences.videoSortType.get(),
-            browserPreferences.videoSortOrder.get(),
-          ).map { it.uri }
-        } else {
-          val currentFile = File(currentPath)
-          if (!currentFile.exists()) return@runCatching false
-          resolveAutoPlaylistSiblingFiles(currentFile, launchSource).map { it.toUri() }
-        }
-      if (siblingUris.size <= 1) return@runCatching false
+      val currentFile = File(currentPath)
+      if (!currentFile.exists()) return@runCatching false
 
+      val launchSource = intent.getStringExtra("launch_source") ?: ""
+      val siblingFiles = resolveAutoPlaylistSiblingFiles(currentFile, launchSource)
+      if (siblingFiles.size <= 1) return@runCatching false
+
+      val currentFilePath = normalizePlaylistFilePath(currentFile.absolutePath)
       val newIndex =
-        siblingUris.indexOfFirst {
-          if (scopedUri != null) {
-            it == scopedUri
-          } else {
-            normalizePlaylistFilePath(it.path.orEmpty()) == normalizePlaylistFilePath(File(currentPath).absolutePath)
-          }
+        siblingFiles.indexOfFirst {
+          normalizePlaylistFilePath(it.absolutePath) == currentFilePath
         }
       if (newIndex < 0) return@runCatching false
       if (!isCurrentMediaRequest(expectedGeneration)) return@runCatching false
@@ -8641,7 +8447,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
         playlistEntity = null
         playlistItems = emptyList()
         isM3uPlaylist = false
-        playlist = siblingUris
+        playlist = siblingFiles.map { it.toUri() }
         // The temporary one-item queue already synced index-aligned metadata for the launched
         // file; clearing it stops its title/artwork from leaking onto the folder's first entry.
         networkPlaylistPaths = emptyList()
@@ -8661,9 +8467,13 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
       }
       true
     }.onFailure { error ->
-      if (error is CancellationException) throw error
       Log.e(TAG, "Failed to auto-generate playlist", error)
     }.getOrDefault(false)
+
+  /**
+   * Check if the current playlist is an M3U playlist (sourced from database).
+   */
+  fun isCurrentPlaylistM3U(): Boolean = isM3uPlaylist
 
   private suspend fun loadDynamicM3uPlaylist(
     uriString: String,
@@ -8733,30 +8543,42 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
   }
 
   /**
-   * Keep the selected track while Android's Surface/VO is suspended. Setting vid=no here
-   * dropped the track required for a paused foreground return after a long background stay.
+   * Disables video decoding to save battery when moving to background playback.
    */
   private fun disableVideoForBackground() {
     if (!isReady || fileName.isBlank()) return
-    if (isMiniPlayerEnabled() && !isDeviceScreenOffOrLocked()) return
-    PlaybackSession.markBackground()
-    isInBackgroundPlayback = true
-    Log.d(TAG, "Background playback keeps selected video track for renderer restoration")
+    if (isMiniPlayerEnabled()) return
+
+    val currentVid = PlaybackSession.getPropertyInt("vid") ?: -1
+    if (currentVid > 0) {
+      lastVid = currentVid
+      PlaybackSession.setPropertyString("vid", "no")
+      isInBackgroundPlayback = true
+      Log.d(TAG, "Video disabled for background playback (saved vid: $lastVid)")
+    }
   }
 
   /**
    * Restores video decoding when returning from background playback.
    */
   private fun enableVideoAfterBackground() {
-    if (!player.isSurfaceReady) {
+    if ((isInBackgroundPlayback || lastVid > 0) && !player.isSurfaceReady) {
       Log.d(TAG, "Deferring video restoration until the playback surface is ready")
       return
     }
 
-    // The session scopes the saved track to its media generation. An Activity-local track id can
-    // belong to the previous file after screen-off autoplay and disable video in the new file.
-    PlaybackSession.markForeground()
+    val wereInBackground = isInBackgroundPlayback
     isInBackgroundPlayback = false
+
+    if (wereInBackground && lastVid > 0) {
+      if (!viewModel.isAudioOnly.value && !isCurrentMediaKnownAudio()) {
+        Log.d(TAG, "Restoring video after background playback (vid: $lastVid)")
+        PlaybackSession.setPropertyInt("vid", lastVid)
+      } else {
+        Log.d(TAG, "Skipping video track restoration because media is in audio-only mode")
+      }
+      lastVid = -1
+    }
   }
 
   companion object {
@@ -8785,7 +8607,6 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
      * Milliseconds-to-seconds conversion factor.
      */
     private const val MILLISECONDS_TO_SECONDS = 1000
-    private const val RENDERER_RECOVERY_WAKE_TIMEOUT_MS = 20_000L
 
     /**
      * Factor to divide subtitle and audio delays to convert from ms to seconds.
@@ -8842,6 +8663,3 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     private const val STATE_PLAYLIST_ORIGINAL_URI = "player_state_playlist_original_uri"
   }
 }
-
-/** Progress of the player shrinking itself into the mini player before it finishes. */
-private enum class SheetCollapse { NONE, RUNNING, ARRIVED }

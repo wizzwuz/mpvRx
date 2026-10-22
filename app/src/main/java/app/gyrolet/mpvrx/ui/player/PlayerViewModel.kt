@@ -6274,8 +6274,19 @@ val isBrightnessSliderShown = MutableStateFlow(false)
   fun skipChapter(forward: Boolean) {
     val chapters = playbackChapters.value
     if (chapters.isEmpty()) {
+      val chapterCount = PlaybackSession.getPropertyInt("chapter-list/count") ?: 0
+      if (chapterCount > 0) {
+        PlaybackSession.command("add", "chapter", if (forward) "1" else "-1")
+        return
+      }
       val noChaptersText = appContext.getString(R.string.player_osd_no_chapters)
       playerUpdate.value = PlayerUpdates.ShowText(noChaptersText)
+      viewModelScope.launch {
+        delay(1500)
+        if (playerUpdate.value is PlayerUpdates.ShowText && (playerUpdate.value as PlayerUpdates.ShowText).value == noChaptersText) {
+          playerUpdate.value = PlayerUpdates.None
+        }
+      }
       return
     }
 
@@ -6318,6 +6329,12 @@ val isBrightnessSliderShown = MutableStateFlow(false)
     }
 
     playerUpdate.value = PlayerUpdates.ShowText(msg)
+    viewModelScope.launch {
+      delay(1500)
+      if (playerUpdate.value is PlayerUpdates.ShowText && (playerUpdate.value as PlayerUpdates.ShowText).value == msg) {
+        playerUpdate.value = PlayerUpdates.None
+      }
+    }
   }
 
   fun handleMediaPrevious() {

@@ -527,16 +527,42 @@ fun PlayerSheets(
         videoZoom = videoZoom,
         videoPanX = videoPanX,
         videoPanY = videoPanY,
-        onZoomChange = viewModel::setVideoZoom,
-        onPanXChange = viewModel::setVideoPanX,
-        onPanYChange = viewModel::setVideoPanY,
+        onZoomChange = { zoom ->
+          viewModel.setVideoZoom(zoom)
+          playerPreferences.defaultVideoZoom.set(zoom)
+        },
+        onPanXChange = { panX ->
+          viewModel.setVideoPanX(panX)
+          playerPreferences.defaultVideoPanX.set(panX)
+        },
+        onPanYChange = { panY ->
+          viewModel.setVideoPanY(panY)
+          playerPreferences.defaultVideoPanY.set(panY)
+        },
         advancedZoomEnabled = advancedZoomEnabled,
         videoScaleX = videoScaleX,
         videoScaleY = videoScaleY,
-        onAdvancedZoomToggle = viewModel::setAdvancedZoomEnabled,
-        onScaleXChange = viewModel::setVideoScaleX,
-        onScaleYChange = viewModel::setVideoScaleY,
-        onResetAdvancedZoom = viewModel::resetAdvancedZoom,
+        onAdvancedZoomToggle = { enabled ->
+          viewModel.setAdvancedZoomEnabled(enabled)
+          playerPreferences.advancedZoomEnabled.set(enabled)
+          if (!enabled) {
+            playerPreferences.defaultVideoScaleX.set(1f)
+            playerPreferences.defaultVideoScaleY.set(1f)
+          }
+        },
+        onScaleXChange = { scale ->
+          viewModel.setVideoScaleX(scale)
+          playerPreferences.defaultVideoScaleX.set(scale)
+        },
+        onScaleYChange = { scale ->
+          viewModel.setVideoScaleY(scale)
+          playerPreferences.defaultVideoScaleY.set(scale)
+        },
+        onResetAdvancedZoom = {
+          viewModel.resetAdvancedZoom()
+          playerPreferences.defaultVideoScaleX.set(1f)
+          playerPreferences.defaultVideoScaleY.set(1f)
+        },
         onSelectRatio = { ratio ->
           if (ratio < 0) {
             // Default selected - apply Fit mode
