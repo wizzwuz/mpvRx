@@ -278,7 +278,9 @@ fun GestureHandler(
       if (tapCount == 1 && pendingSingleTapRegion != null && !isDoubleTapSeeking && !longPressTriggeredDuringTouch) {
         val region = pendingSingleTapRegion!!
         val isCenterTap = region == "center"
-        if (useSingleTapForCenter && isCenterTap) {
+        if (areControlsLocked) {
+          viewModel.showControls()
+        } else if (useSingleTapForCenter && isCenterTap) {
           viewModel.handleCenterSingleTap()
         } else if (useSingleTapForLeftRight && (region == "left" || region == "right")) {
           val effectiveRegion = if (reverseDoubleTap) {
@@ -294,9 +296,7 @@ fun GestureHandler(
             if (panelShown != Panels.None) viewModel.panelShown.update { Panels.None }
             if (externalPanelShown) onDismissExternalPanel()
           }
-          if (areControlsLocked) {
-            viewModel.showControls()
-          } else if (controlsShown) {
+          if (controlsShown) {
             viewModel.hideControls()
           } else {
             viewModel.showControls()

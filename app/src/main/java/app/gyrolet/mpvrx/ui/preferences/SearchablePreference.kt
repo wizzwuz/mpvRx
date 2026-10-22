@@ -765,6 +765,15 @@ object SearchablePreferences {
       )
       add(
         SearchablePreference(
+          titleRes = R.string.pref_gesture_use_single_tap_for_left_right_title,
+          summaryRes = R.string.pref_gesture_use_single_tap_for_left_right_summary,
+          keywords = listOf("single", "tap", "left", "right", "play", "pause"),
+          category = "Gestures",
+          screen = GesturePreferencesScreen,
+        ),
+      )
+      add(
+        SearchablePreference(
           titleRes = R.string.pref_gesture_dont_show_seekbar_on_double_tap_title,
           summaryRes = R.string.pref_gesture_dont_show_seekbar_on_double_tap_summary,
           keywords = listOf("double", "tap", "seekbar", "timeline", "seek", "hide"),

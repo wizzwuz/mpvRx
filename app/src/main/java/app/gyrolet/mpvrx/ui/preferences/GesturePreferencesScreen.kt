@@ -485,6 +485,8 @@ object GesturePreferencesScreen : Screen {
                     color = MaterialTheme.colorScheme.outline,
                   )
                 },
+              )
+
               PreferenceDivider()
 
               val useSingleTapForLeftRight by preferences.useSingleTapForLeftRight.collectAsState()
