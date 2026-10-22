@@ -485,7 +485,67 @@ object GesturePreferencesScreen : Screen {
                     color = MaterialTheme.colorScheme.outline,
                   )
                 },
+              PreferenceDivider()
+
+              val useSingleTapForLeftRight by preferences.useSingleTapForLeftRight.collectAsState()
+              SwitchPreference(
+                modifier = Modifier.settingsSearchTarget(R.string.pref_gesture_use_single_tap_for_left_right_title),
+                value = useSingleTapForLeftRight,
+                onValueChange = { preferences.useSingleTapForLeftRight.set(it) },
+                title = {
+                  Text(
+                    text = stringResource(id = R.string.pref_gesture_use_single_tap_for_left_right_title),
+                  )
+                },
+                summary = {
+                  Text(
+                    text = stringResource(id = R.string.pref_gesture_use_single_tap_for_left_right_summary),
+                    color = MaterialTheme.colorScheme.outline,
+                  )
+                },
               )
+
+              if (useSingleTapForLeftRight) {
+                PreferenceDivider()
+
+                val leftSingleTap by preferences.leftSingleTapGesture.collectAsState()
+                ExpressivePreferenceItem {
+                ListPreference(
+                  modifier = Modifier.settingsSearchTarget(R.string.pref_gesture_single_tap_left_title),
+                  value = leftSingleTap,
+                  onValueChange = { preferences.leftSingleTapGesture.set(it) },
+                  values = SingleActionGesture.entries,
+                  valueToText = { AnnotatedString(resources.getString(it.titleRes)) },
+                  title = { Text(text = stringResource(R.string.pref_gesture_single_tap_left_title)) },
+                  summary = {
+                    Text(
+                      text = stringResource(leftSingleTap.titleRes),
+                      color = MaterialTheme.colorScheme.outline,
+                    )
+                  },
+                )
+                }
+
+                PreferenceDivider()
+
+                val rightSingleTap by preferences.rightSingleTapGesture.collectAsState()
+                ExpressivePreferenceItem {
+                ListPreference(
+                  modifier = Modifier.settingsSearchTarget(R.string.pref_gesture_single_tap_right_title),
+                  value = rightSingleTap,
+                  onValueChange = { preferences.rightSingleTapGesture.set(it) },
+                  values = SingleActionGesture.entries,
+                  valueToText = { AnnotatedString(resources.getString(it.titleRes)) },
+                  title = { Text(text = stringResource(R.string.pref_gesture_single_tap_right_title)) },
+                  summary = {
+                    Text(
+                      text = stringResource(rightSingleTap.titleRes),
+                      color = MaterialTheme.colorScheme.outline,
+                    )
+                  },
+                )
+                }
+              }
 
               PreferenceDivider()
 

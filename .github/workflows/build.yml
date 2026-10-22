@@ -363,7 +363,7 @@ jobs:
   publish-experimental:
     name: Publish experimental updates
     needs: build
-    if: ${{ github.repository == 'Riteshp2001/mpvRx' && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' && secrets.SIGNING_KEYSTORE != '' }}
+    if: ${{ github.repository == 'Riteshp2001/mpvRx' && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

@@ -2815,4 +2815,8 @@
   <string name="player_osd_last_chapter">Last chapter</string>
   <string name="player_osd_next_chapter">Next: %1$s</string>
   <string name="player_osd_prev_chapter">Previous: %1$s</string>
+  <string name="pref_gesture_use_single_tap_for_left_right_title">Use single tap for left/right gesture</string>
+  <string name="pref_gesture_use_single_tap_for_left_right_summary">Use a single tap in the left and right areas for gestures (e.g. play/pause) alongside double tap.</string>
+  <string name="pref_gesture_single_tap_left_title">Single tap (left)</string>
+  <string name="pref_gesture_single_tap_right_title">Single tap (right)</string>
 </resources>
