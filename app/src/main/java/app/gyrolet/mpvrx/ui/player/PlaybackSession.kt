@@ -24,12 +24,20 @@ import app.gyrolet.mpvrx.domain.network.XtreamPlaybackUri
 import app.gyrolet.mpvrx.network.AndroidCookieJar
 import app.gyrolet.mpvrx.preferences.AdvancedPreferences
 import app.gyrolet.mpvrx.preferences.AudioPreferences
+import app.gyrolet.mpvrx.preferences.MpvConfigControlledFeatures
 import app.gyrolet.mpvrx.preferences.MpvConfigOverridePolicy
 import `is`.xyz.mpv.MPVLib
 import `is`.xyz.mpv.MPVNode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,7 +47,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicLong
@@ -54,6 +61,8 @@ data class PlaybackSessionState(
   val paused: Boolean = true,
   val currentItem: PlaybackItem? = null,
   val error: String? = null,
+  /** The current network media is waiting for its cache, rather than merely loading or restarting. */
+  val isBuffering: Boolean = false,
 )
 
 data class PlaybackPositionRestoreOverride(
@@ -104,12 +113,45 @@ class PlaybackProperty<T> internal constructor(
 @Suppress("TooManyFunctions")
 object PlaybackSession : MPVLib.EventObserver {
   private const val TAG = "PlaybackSession"
+  private val nativeEvents = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
+  private var nativeObserver: NativeEventObserver? = null
+
+  private class NativeEventObserver : MPVLib.EventObserver {
+    private fun enqueue(action: () -> Unit) {
+      nativeEvents.launch {
+        nativeLock.withLock {
+          if (nativeObserver === this@NativeEventObserver) action()
+        }
+      }
+    }
+
+    override fun eventProperty(property: String) = enqueue { PlaybackSession.eventProperty(property) }
+
+    override fun eventProperty(property: String, value: Long) = enqueue { PlaybackSession.eventProperty(property, value) }
+
+    override fun eventProperty(property: String, value: Boolean) = enqueue { PlaybackSession.eventProperty(property, value) }
+
+    override fun eventProperty(property: String, value: String) = enqueue { PlaybackSession.eventProperty(property, value) }
+
+    override fun eventProperty(property: String, value: Double) = enqueue { PlaybackSession.eventProperty(property, value) }
+
+    override fun eventProperty(property: String, value: MPVNode) = enqueue { PlaybackSession.eventProperty(property, value) }
+
+    override fun event(eventId: Int, data: MPVNode) = enqueue { PlaybackSession.event(eventId, data) }
+  }
+
+  private fun unregisterNativeObserver() {
+    val observer = nativeObserver ?: return
+    nativeObserver = null
+    MPVLib.removeObserver(observer)
+  }
+
+  private val BUFFERING_STATUS_PROPERTIES = setOf("pause", "paused-for-cache", "demuxer-via-network", "eof-reached")
   private const val SEEK_AUDIO_RESTORE_DELAY_MS = 60L
   private const val SEEK_AUDIO_FALLBACK_RESTORE_MS = 750L
   private const val PLAYBACK_TRANSITION_AUDIO_RESTORE_DELAY_MS = 180L
   private const val AMBIENT_SHADER_PREFIX = "ambient_"
   private const val AMBIENT_SHADER_SUFFIX = ".glsl"
-  private const val AMBIENT_SCALE_EPSILON = 0.000001
   private val TIMELINE_PROPERTIES =
     setOf(
       "time-pos",
@@ -120,6 +162,21 @@ object PlaybackSession : MPVLib.EventObserver {
       "percent-pos",
     )
   private val AUDIO_SUBTITLE_TRACK_PROPERTIES = setOf("aid", "sid", "secondary-sid")
+
+  /**
+   * Stronger libavformat probing only for local audio/video items whose library duration is
+   * missing. This check never reads files or metadata and is therefore safe on the load path.
+   * Network streams, archive entries, torrents and audiobooks keep their normal startup settings.
+   */
+  private fun shouldProbeMissingDuration(item: PlaybackItem, playableUri: String): Boolean {
+    if ((item.durationSeconds ?: 0) > 0 || item.audiobook != null || item.torrentFileIndex != null) return false
+    if (item.networkSource != null || item.declaredMediaKind() == DeclaredPlaybackMediaKind.UNKNOWN) return false
+    if (app.gyrolet.mpvrx.domain.archive.ZipArchiveMedia.isPlaybackUri(item.originalUri)) return false
+    return playableUri.startsWith("/") ||
+      playableUri.startsWith("file://", ignoreCase = true) ||
+      playableUri.startsWith("content://", ignoreCase = true) ||
+      playableUri.startsWith("fd://", ignoreCase = true)
+  }
 
   /** URI schemes whose playback goes through a network protocol in libmpv. */
   private val STREAMING_OPTION_SCHEMES =
@@ -212,19 +269,18 @@ object PlaybackSession : MPVLib.EventObserver {
   private var initialized = false
   private var nativeCoreReady = false
 
-  /**
-   * Whether libmpv's process-wide `mpv_handle` currently exists, i.e. whether `MPVLib.create` has
-   * run without a matching `MPVLib.destroy`. Mirrors native state that the JNI layer exposes no
-   * accessor for. Guarded by [nativeLock]; `MPVLib.create` exits the process if it is called twice
-   * and `MPVLib.init` exits if it is never called, so it must never disagree with the native layer.
-   */
-  private var nativeCoreCreated = false
   private var pendingEofSeekGeneration: Long? = null
   private var applicationContext: Context? = null
   private var desiredVideoOutput = "gpu"
   private var activeCoreConfigurationKey: String? = null
   private var activeUserScriptsKey: String? = null
   private var attachedSurfaceOwner: Any? = null
+  private var attachedSurfaceWidth = 0
+  private var attachedSurfaceHeight = 0
+  private var surfaceAttachmentToken = 0L
+  private var rendererOutputReady = false
+  private val surfaceCallbackHandler = Handler(Looper.getMainLooper())
+  private var lastSurfaceVideoTrack: SuspendedVideoTrack? = null
   private var activeNetworkStream: NetworkStreamRegistration? = null
   private val auxiliaryNetworkStreams = linkedMapOf<String, NetworkStreamRegistration>()
   private var suspendedVideoTrack: SuspendedVideoTrack? = null
@@ -249,54 +305,23 @@ object PlaybackSession : MPVLib.EventObserver {
   private val activeAmbientShaderPaths = linkedSetOf<String>()
   private var desiredAmbientScaleX = 1.0
   private var desiredAmbientScaleY = 1.0
+  // Logical video transforms remain available to gestures while Ambient owns the OUTPUT canvas.
+  private var ambientVideoTransform: MutableMap<String, Double>? = null
+  @Volatile var isAmbientShaderActive: Boolean = false
+    private set
+  private val ambientTransformProperties = setOf("video-zoom", "video-pan-x", "video-pan-y")
   private var streamingOptionsApplied = false
   private var appliedUserAgent: String? = null
+  private var defaultHttpHeaderFields: String? = null
+  private var appliedHttpHeaderFields: String? = null
 
   val isInitialized: Boolean
     get() = initialized
-
-  /**
-   * True only inside the `MPVLib.create()`..`MPVLib.init()` window of a core being created.
-   * [nativeCoreReady] is the single source of that window: it is cleared at the top of every core
-   * (re)build and in [destroyLocked], and only set once `MPVLib.init()` has returned. Init-time
-   * option writers can use it to tell "writing to a pristine core" apart from "writing to a live
-   * core that already ran mpv.conf". Only safe to read while holding [nativeLock], which is
-   * re-entrant for the `initialize()` call stack that runs those writers.
-   */
-  internal val isNativeCorePendingInit: Boolean
-    get() = nativeLock.withLock { !nativeCoreReady }
 
   fun invalidateCoreConfiguration() {
     nativeLock.withLock { activeCoreConfigurationKey = null }
   }
 
-  /**
-   * Moves libmpv's native core creation off the main thread, ahead of the first video open.
-   *
-   * Touching [MPVLib] for the first time runs its `System.loadLibrary` of the ~30-40MB libmpv
-   * (`dlopen` + ELF relocation + page faults), and `MPVLib.create` then allocates the process-wide
-   * `mpv_handle`. Both used to happen on the main thread inside `initialize()`, before the
-   * SurfaceView surface is created — delaying the `vo` flip and therefore MediaCodec startup.
-   *
-   * libmpv's core is a process-wide singleton with no handle to stash: `MPVLib.create` exits the
-   * process when `g_mpv` is already non-null, and `MPVLib.init` exits when it is null. So this
-   * only creates the core and records that it exists; [initialize] adopts it instead of creating a
-   * second one. [nativeLock] serializes the two, and it is released again immediately, so the main
-   * thread never pays for the load twice.
-   *
-   * Deliberately does *not* call `MPVLib.init()`: that parses mpv.conf and loads Lua scripts, and
-   * every option must first be written by `initOptions()`, which is bound to `MPVView`. Leaving the
-   * core uninitialized costs nothing either, because `destroy()` and `destroyLocked()` are the only
-   * callers of `MPVLib.destroy()` and both are guarded on [initialized].
-   */
-  internal fun prewarmNativeCore(context: Context) {
-    nativeLock.withLock {
-      if (nativeCoreCreated) return
-      runCatching { MPVLib.create(context.applicationContext) }
-        .onSuccess { nativeCoreCreated = true }
-        .onFailure { error -> Log.w(TAG, "Failed to prewarm the libmpv core", error) }
-    }
-  }
 
 /**
  * Whether a core built for [currentKey] must be recreated for a changed user-script selection.
@@ -324,7 +349,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     }
 
   val propInt = PlaybackProperty(MPVLib.MpvFormat.MPV_FORMAT_INT64, ::getPropertyInt)
-  val propLong = PlaybackProperty(MPVLib.MpvFormat.MPV_FORMAT_INT64) { property -> getPropertyInt(property)?.toLong() }
+  val propLong = PlaybackProperty(MPVLib.MpvFormat.MPV_FORMAT_INT64, ::getPropertyLong)
   val propBoolean = PlaybackProperty(MPVLib.MpvFormat.MPV_FORMAT_FLAG, ::getPropertyBoolean)
   val propDouble = PlaybackProperty(MPVLib.MpvFormat.MPV_FORMAT_DOUBLE, ::getPropertyDouble)
   val propFloat = PlaybackProperty(MPVLib.MpvFormat.MPV_FORMAT_DOUBLE, ::getPropertyFloat)
@@ -356,6 +381,8 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
         nativeCoreReady = false
         observedProperties.clear()
         suspendedVideoTrack = null
+        lastSurfaceVideoTrack = null
+        rendererOutputReady = false
         deferredVideoSelectionGeneration = null
         pendingStopClearQueue = false
         supersededStopGeneration = 0L
@@ -363,6 +390,8 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
         loadedGeneration = 0L
         defaultUserAgent = null
         appliedUserAgent = null
+        defaultHttpHeaderFields = null
+        appliedHttpHeaderFields = null
         pendingPositionRestoreGeneration = 0L
         pendingPositionRestoreOverride = null
         initialPositionGeneration = 0L
@@ -371,12 +400,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
         resetAmbientShaderTrackingLocked()
         updateState { it.copy(phase = PlaybackPhase.INITIALIZING, error = null) }
         try {
-          // Adopts the core [prewarmNativeCore] already created instead of calling
-          // MPVLib.create a second time, which libmpv treats as a fatal double-create.
-          if (!nativeCoreCreated) {
-            MPVLib.create(context.applicationContext)
-            nativeCoreCreated = true
-          }
+          MPVLib.create(context.applicationContext)
           MPVLib.setOptionString("config", "yes")
           MPVLib.setOptionString("config-dir", configDir)
           MPVLib.setOptionString("gpu-shader-cache-dir", cacheDir)
@@ -392,14 +416,19 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
           // headers may temporarily override it, but must not leak into the next item.
           defaultUserAgent = MPVLib.getPropertyString("user-agent")
           appliedUserAgent = defaultUserAgent
+          defaultHttpHeaderFields = MPVLib.getPropertyString("http-header-fields").orEmpty()
+          appliedHttpHeaderFields = defaultHttpHeaderFields
           postInitOptions()
           MPVLib.getPropertyString("vo")
             ?.takeIf { it.isNotBlank() && it != "null" }
             ?.let { desiredVideoOutput = it }
           MPVLib.setPropertyString("vo", "null")
-          MPVLib.setOptionString("force-window", "no")
-          MPVLib.setOptionString("idle", "yes")
-          MPVLib.addObserver(this)
+          MPVLib.setPropertyString("force-window", "no")
+          MPVLib.setPropertyString("idle", "yes")
+          NativeEventObserver().also { observer ->
+            nativeObserver = observer
+            MPVLib.addObserver(observer)
+          }
           reobserveTrackedProperties()
           observeProperties()
           initialized = true
@@ -408,11 +437,10 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
           updateState { it.copy(phase = PlaybackPhase.IDLE, paused = true, error = null) }
           true
         } catch (error: Throwable) {
-          runCatching { MPVLib.removeObserver(this) }
+          runCatching { unregisterNativeObserver() }
           runCatching { MPVLib.destroy() }
           initialized = false
           nativeCoreReady = false
-          nativeCoreCreated = false
           activeCoreConfigurationKey = null
           activeUserScriptsKey = null
           suspendedVideoTrack = null
@@ -446,31 +474,115 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     height: Int? = null,
     owner: Any,
     ownerIsActive: () -> Boolean = { true },
+    onRendererReady: (() -> Unit)? = null,
+    onRendererFailed: (() -> Unit)? = null,
   ): Boolean =
     withCore(default = false) {
-      if (!ownerIsActive() || !surface.isValid) return@withCore false
+      if (!ownerIsActive() || !surface.isValid) {
+        Log.w(TAG, "Skipping stale/invalid Android Surface attachment: valid=${surface.isValid}")
+        return@withCore false
+      }
 
       // Surface ownership is a renderer concern only. Full player, mini player, PiP and Activity
       // recreation all hand the same live media session between Android Surfaces. Never change
       // `vid` during that handoff or mpv can discard cached packets and refetch normal HTTP data.
-      if (_state.value.surfaceAttached && attachedSurfaceOwner !== owner) {
-        detachRendererSurfaceLocked()
-      }
+      // Always shut down the previous VO before changing the JNI Surface, including
+      // same-owner Surface recreation. A live GPU backend must never see wid=0.
+      if (_state.value.surfaceAttached) detachRendererSurfaceLocked()
       MPVLib.attachSurface(surface)
+      attachedSurfaceWidth = 0
+      attachedSurfaceHeight = 0
       width?.takeIf { it > 0 }?.let { resolvedWidth ->
         height?.takeIf { it > 0 }?.let { resolvedHeight ->
           MPVLib.setPropertyString("android-surface-size", "${resolvedWidth}x$resolvedHeight")
+          attachedSurfaceWidth = resolvedWidth
+          attachedSurfaceHeight = resolvedHeight
         }
       }
-      MPVLib.setOptionString("force-window", "yes")
-      MPVLib.setPropertyString("vo", desiredVideoOutput)
       attachedSurfaceOwner = owner
       updateState { it.copy(surfaceAttached = true) }
-      restoreSuspendedVideoTrackLocked()
-      if (deferredVideoSelectionGeneration == _state.value.generation) {
-        MPVLib.setPropertyString("vid", "auto")
-        deferredVideoSelectionGeneration = null
+      rendererOutputReady = false
+      val token = ++surfaceAttachmentToken
+
+      // The JNI attachSurface() queues wid through mpv_set_option. On foreground return
+      // the playback thread can run before mpv has consumed that option, producing
+      // "Missing surface pointer", dropping the video track and a permanent black screen.
+      // Never request gpu-next or select a video decoder until wid is observable.
+      nativeEvents.launch {
+        var activated = false
+        try {
+          // Waking a suspended process/driver can take longer than a second. Readiness has one
+          // owner here; a separate View timer must not give up before this job finishes.
+          repeat(300) {
+            delay(16)
+            val ready = nativeLock.withLock {
+              if (token != surfaceAttachmentToken || attachedSurfaceOwner !== owner ||
+                !_state.value.surfaceAttached || !surface.isValid ||
+                !initialized
+              ) return@withLock null
+              if (_state.value.phase == PlaybackPhase.STOPPING) return@withLock false
+              // The JNI Int accessor truncates int64 values. wid is a native reference,
+              // so its low 32 bits must never decide whether the Surface is attached.
+              val windowId = MPVLib.getPropertyString("wid")?.toLongOrNull() ?: 0L
+              if (windowId == 0L || windowId == -1L) return@withLock false
+
+              val activated = runCatching {
+                MPVLib.setPropertyString("force-window", "yes")
+                MPVLib.setPropertyString("vo", desiredVideoOutput)
+                rendererOutputReady = true
+                restoreSuspendedVideoTrackLocked()
+                applyDeferredVideoSelectionLocked()
+                // A failed VO can deselect vid while leaving audio alive. Restore only
+                // the track that was actually selected before this Surface was lost.
+                lastSurfaceVideoTrack?.takeIf { it.generation == _state.value.generation }?.let { saved ->
+                  if ((MPVLib.getPropertyString("vid")?.toIntOrNull() ?: -1) <= 0) {
+                    MPVLib.setPropertyInt("vid", saved.id)
+                    Log.w(TAG, "Recovered video track ${saved.id} after renderer handoff")
+                  }
+                }
+                lastSurfaceVideoTrack = null
+                Log.d(TAG, "Android renderer ready: generation=${_state.value.generation}, wid=$windowId")
+              }.onFailure {
+                rendererOutputReady = false
+                Log.e(TAG, "Could not activate video output after Surface attachment", it)
+              }
+              activated.isSuccess
+            }
+            if (ready == null) return@launch
+            if (ready) {
+              activated = true
+              onRendererReady?.let { callback ->
+                surfaceCallbackHandler.post {
+                  val stillCurrent = nativeLock.withLock {
+                    token == surfaceAttachmentToken && attachedSurfaceOwner === owner && rendererOutputReady
+                  }
+                  if (stillCurrent) callback()
+                }
+              }
+              return@launch
+            }
+          }
+        } finally {
+          if (!activated) {
+            val detached = nativeLock.withLock {
+              if (token != surfaceAttachmentToken || attachedSurfaceOwner !== owner || !initialized) {
+                false
+              } else {
+                // A failed bind must be retryable. Leaving surfaceAttached=true strands every
+                // later ensureSurfaceAttached() call behind an attachment that never became ready.
+                detachRendererSurfaceLocked()
+                true
+              }
+            }
+            if (detached) {
+              Log.e(TAG, "Native Android renderer did not become ready; released failed attachment")
+              onRendererFailed?.let { callback -> surfaceCallbackHandler.post { callback() } }
+            }
+          }
+        }
       }
+      Log.d(TAG, "Android Surface attached; waiting for native window: generation=${_state.value.generation}, " +
+        "phase=${_state.value.phase}, size=${attachedSurfaceWidth}x$attachedSurfaceHeight")
       true
     }
 
@@ -483,9 +595,18 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
       if (width <= 0 || height <= 0 || attachedSurfaceOwner !== owner || !_state.value.surfaceAttached) {
         return@withCore false
       }
+      if (width == attachedSurfaceWidth && height == attachedSurfaceHeight) return@withCore true
       MPVLib.setPropertyString("android-surface-size", "${width}x$height")
+      attachedSurfaceWidth = width
+      attachedSurfaceHeight = height
       true
     }
+
+  fun isSurfaceAttachedTo(owner: Any): Boolean =
+    nativeLock.withLock { _state.value.surfaceAttached && attachedSurfaceOwner === owner }
+
+  fun isRendererReadyFor(owner: Any): Boolean =
+    nativeLock.withLock { rendererOutputReady && _state.value.surfaceAttached && attachedSurfaceOwner === owner }
 
   fun unbindSurface(owner: Any): Boolean =
     withCore(default = false) {
@@ -504,10 +625,18 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
    * they must not change video-track selection or disturb the live demuxer/cache.
    */
   private fun detachRendererSurfaceLocked() {
+    ++surfaceAttachmentToken
+    rendererOutputReady = false
+    val trackId = MPVLib.getPropertyString("vid")?.toIntOrNull() ?: -1
+    if (trackId > 0 && _state.value.currentItem?.videoSelection() == PlaybackVideoSelection.IMMEDIATE) {
+      lastSurfaceVideoTrack = SuspendedVideoTrack(trackId, _state.value.generation)
+    }
     runCatching { MPVLib.setPropertyString("vo", "null") }
-    runCatching { MPVLib.setOptionString("force-window", "no") }
+    runCatching { MPVLib.setPropertyString("force-window", "no") }
     runCatching { MPVLib.detachSurface() }
     attachedSurfaceOwner = null
+    attachedSurfaceWidth = 0
+    attachedSurfaceHeight = 0
     updateState { it.copy(surfaceAttached = false) }
   }
 
@@ -516,7 +645,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     withCore(Unit, allowInitializing = true) {
       // Track selection does not require an Android Surface, but a GPU video output does.
       // bindSurface() performs the real null -> configured output transition later.
-      MPVLib.setOptionString("vo", if (_state.value.surfaceAttached) videoOutput else "null")
+      setNativeOptionLocked("vo", if (rendererOutputReady) videoOutput else "null")
     }
   }
 
@@ -532,6 +661,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
         if (current.phase == PlaybackPhase.BACKGROUND) current.copy(phase = PlaybackPhase.READY) else current
       }
       restoreSuspendedVideoTrackLocked()
+      applyDeferredVideoSelectionLocked()
     }
   }
 
@@ -705,6 +835,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     pendingPositionRestoreOverride = null
     initialPositionGeneration = 0L
     suspendedVideoTrack = null
+    lastSurfaceVideoTrack = null
     deferredVideoSelectionGeneration = null
     pendingStopClearQueue = false
     supersededStopGeneration = 0L
@@ -714,8 +845,11 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     runCatching { MPVLib.setPropertyBoolean("pause", true) }
     runCatching { MPVLib.setPropertyString("vo", "null") }
     runCatching { MPVLib.detachSurface() }
+    rendererOutputReady = false
     attachedSurfaceOwner = null
-    runCatching { MPVLib.removeObserver(this) }
+    attachedSurfaceWidth = 0
+    attachedSurfaceHeight = 0
+    runCatching { unregisterNativeObserver() }
     runCatching { MPVLib.destroy() }
       .onFailure { error -> Log.e(TAG, "Failed to destroy libmpv", error) }
     releaseActiveNetworkStreamLocked()
@@ -728,7 +862,6 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     _videoPanY.value = 0f
     initialized = false
     nativeCoreReady = false
-    nativeCoreCreated = false
     streamingOptionsApplied = false
     activeCoreConfigurationKey = null
     activeUserScriptsKey = null
@@ -966,10 +1099,16 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
       val videoSelection = resolvedItem.videoSelection()
       // MediaCodec needs a valid native window when the video decoder is created. The optimized
       // startup path can issue loadfile before SurfaceView.surfaceCreated, so defer video-track
-      // selection until bindSurface attaches a valid Surface.
+      // selection until bindSurface has activated the native window and video output.
       val selectVideoForNewFile = videoSelection == PlaybackVideoSelection.IMMEDIATE
       val deferVideoSelectionUntilSurface =
-        selectVideoForNewFile && !_state.value.surfaceAttached
+        selectVideoForNewFile && !rendererOutputReady
+      // MPV's ytdl_hook checks options/vid during extraction. Passing vid=no while the
+      // Surface is pending makes yt-dlp request bestaudio only; restoring vid later cannot
+      // recover the video formats that were never extracted. Preserve video selection for
+      // yt-dlp URLs, but keep decoder/surface deferral for ordinary local and direct streams.
+      val ytdlVideoRequiresSelection = selectVideoForNewFile &&
+        app.gyrolet.mpvrx.ui.player.ytdlp.YtdlpManager.requiresYtdlp(playableUri)
 
       // An OUTPUT Ambient shader bakes the previous video's aspect ratio into its GLSL. Because the
       // libmpv core outlives PlayerActivity, a late/cancelled Ambient job can otherwise poison the
@@ -979,6 +1118,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
 
       // A saved video-track id belongs to the outgoing file only. Never carry it into a new load.
       suspendedVideoTrack = null
+      lastSurfaceVideoTrack = null
       desiredPaused = positionRestoreOverride?.paused ?: false
       clearSeekAudioGuardLocked(restoreMute = true)
 
@@ -1017,18 +1157,25 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
         MPVLib.setPropertyString("user-agent", userAgent)
         appliedUserAgent = userAgent
       }
-      if (resolvedItem.headers.isNotEmpty()) {
-        MPVLib.setPropertyString(
-          "http-header-fields",
-          PlaybackHttpHeaders.toMpvHeaderFields(resolvedItem.headers),
-        )
+      // http-header-fields is a core-wide mpv property. Reset it to the mpv.conf default
+      // when the incoming item has no headers; otherwise a previous stream's Referer,
+      // Authorization, or Cookie can leak into an unrelated media request.
+      val nextHttpHeaders =
+        if (resolvedItem.headers.isEmpty()) {
+          defaultHttpHeaderFields.orEmpty()
+        } else {
+          PlaybackHttpHeaders.toMpvHeaderFields(resolvedItem.headers)
+        }
+      if (nextHttpHeaders != appliedHttpHeaderFields) {
+        MPVLib.setPropertyString("http-header-fields", nextHttpHeaders)
+        appliedHttpHeaderFields = nextHttpHeaders
       }
       MPVLib.setPropertyString("force-media-title", "")
       MPVLib.setPropertyString("user-data/mpvrx/original-path", smbPath ?: resolvedItem.originalUri)
 
-      if (!_state.value.surfaceAttached) {
+      if (!rendererOutputReady) {
         MPVLib.setPropertyString("vo", "null")
-        MPVLib.setOptionString("force-window", "no")
+        MPVLib.setPropertyString("force-window", "no")
       }
 
       // Disable the outgoing track only once this replacement request owns the native lock. Doing
@@ -1038,8 +1185,15 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
       val loadOptions =
         buildList {
           add("pause=yes")
-          add(if (selectVideoForNewFile && !deferVideoSelectionUntilSurface) "vid=auto" else "vid=no")
+          add(if (selectVideoForNewFile && (!deferVideoSelectionUntilSurface || ytdlVideoRequiresSelection)) "vid=auto" else "vid=no")
           initialPosition?.let { add("start=$it") }
+          // Keep ordinary files on mpv's fast path. Only files with no indexed duration need
+          // bounded stream probing; loadfile scopes these options to the current file.
+          if (shouldProbeMissingDuration(resolvedItem, playableUri)) {
+            add("demuxer-lavf-probe-info=yes")
+            add("demuxer-lavf-probesize=4MiB")
+            add("demuxer-lavf-analyzeduration=5")
+          }
           if (flattenEditions && !MpvConfigOverridePolicy.isOwnedByMpvConf("flatten-editions")) {
             add("flatten-editions=yes")
           }
@@ -1098,6 +1252,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
         return@withLock
       }
 
+      applyDeferredVideoSelectionLocked()
       MPVLib.setPropertyBoolean("pause", desiredPaused)
       updateState {
         it.copy(
@@ -1108,6 +1263,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
       }
       publishTimelinePropertiesLocked()
       propBoolean.emit("pause", desiredPaused)
+      refreshBufferingState()
     }
   }
 
@@ -1168,7 +1324,16 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     value: String,
   ): Int {
     if (MpvConfigOverridePolicy.isOwnedByMpvConf(name)) return 0
-    return withCore(-1, allowInitializing = true) { MPVLib.setOptionString(name, value) }
+    return withCore(-1, allowInitializing = true) {
+      val result = setNativeOptionLocked(name, value)
+      if (nativeCoreReady && name == "user-agent" && result >= 0) {
+        // A refreshed yt-dlp preference is the new default. Per-item headers in load()
+        // must restore that value, not the preference captured at the first core startup.
+        defaultUserAgent = value
+        appliedUserAgent = value
+      }
+      result
+    }
   }
 
   /**
@@ -1179,9 +1344,25 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
   fun setIntegrationOptionString(
     name: String,
     value: String,
-  ): Int = withCore(-1, allowInitializing = true) { MPVLib.setOptionString(name, value) }
+  ): Int = withCore(-1, allowInitializing = true) { setNativeOptionLocked(name, value) }
+
+  private fun setNativeOptionLocked(name: String, value: String): Int {
+    if (!nativeCoreReady) return MPVLib.setOptionString(name, value)
+    // List-operation suffixes are option syntax, not property names. In particular,
+    // ytdl_hook must receive its bundled executable path when refreshing a live core.
+    if (name == "script-opts-append") {
+      MPVLib.command("change-list", "script-opts", "append", value)
+    } else {
+      MPVLib.setPropertyString(name, value)
+    }
+    return 0
+  }
 
   fun getPropertyInt(property: String): Int? = withReadyCore(null) { MPVLib.getPropertyInt(property) }
+
+  // mpvlib's getPropertyLong delegates through Int; string conversion preserves all 64 bits.
+  fun getPropertyLong(property: String): Long? =
+    withReadyCore(null) { MPVLib.getPropertyString(property)?.toLongOrNull() }
 
   fun setPropertyInt(
     property: String,
@@ -1189,7 +1370,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
   ) {
     if (MpvConfigOverridePolicy.isOwnedByMpvConf(property)) return
     withCore(Unit) {
-      if (property in AUDIO_SUBTITLE_TRACK_PROPERTIES && MPVLib.getPropertyInt(property) == value) {
+      if (property in AUDIO_SUBTITLE_TRACK_PROPERTIES && MPVLib.getPropertyString(property)?.toIntOrNull() == value) {
         return@withCore
       }
       MPVLib.setPropertyInt(property, value)
@@ -1218,7 +1399,9 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     }
   }
 
-  fun getPropertyDouble(property: String): Double? = withReadyCore(null) { MPVLib.getPropertyDouble(property) }
+  fun getPropertyDouble(property: String): Double? = withReadyCore(null) {
+    ambientVideoTransform?.get(property) ?: MPVLib.getPropertyDouble(property)
+  }
 
   fun setPropertyDouble(
     property: String,
@@ -1226,15 +1409,11 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
   ) {
     if (MpvConfigOverridePolicy.isOwnedByMpvConf(property)) return
     withCore(Unit) {
+      if (property in ambientTransformProperties && ambientVideoTransform != null) {
+        ambientVideoTransform!![property] = value
+        return@withCore
+      }
       when (property) {
-        "video-scale-x" -> {
-          desiredAmbientScaleX = value
-          MPVLib.setPropertyDouble(property, value)
-        }
-        "video-scale-y" -> {
-          desiredAmbientScaleY = value
-          MPVLib.setPropertyDouble(property, value)
-        }
         "time-pos" -> {
           rememberEofSeekLocked(value, listOf("absolute"))
           MPVLib.setPropertyDouble(property, value)
@@ -1244,14 +1423,22 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     }
   }
 
-  fun getPropertyFloat(property: String): Float? = withReadyCore(null) { MPVLib.getPropertyFloat(property) }
+  fun getPropertyFloat(property: String): Float? = withReadyCore(null) {
+    ambientVideoTransform?.get(property)?.toFloat() ?: MPVLib.getPropertyFloat(property)
+  }
 
   fun setPropertyFloat(
     property: String,
     value: Float,
   ) {
     if (MpvConfigOverridePolicy.isOwnedByMpvConf(property)) return
-    withCore(Unit) { MPVLib.setPropertyFloat(property, value) }
+    withCore(Unit) {
+      if (property in ambientTransformProperties && ambientVideoTransform != null) {
+        ambientVideoTransform!![property] = value.toDouble()
+      } else {
+        MPVLib.setPropertyFloat(property, value)
+      }
+    }
   }
 
   fun getPropertyBoolean(property: String): Boolean? = withReadyCore(null) { MPVLib.getPropertyBoolean(property) }
@@ -1274,7 +1461,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     val state = _state.value
     val item = loadedPlaybackItem ?: return@withReadyCore null
     if (state.phase !in setOf(PlaybackPhase.READY, PlaybackPhase.BACKGROUND) || loadedGeneration != state.generation ||
-      state.currentItem?.stableId != item.stableId || state.currentItem?.audiobook != item.audiobook ||
+      state.currentItem?.stableId != item.stableId || state.currentItem.audiobook != item.audiobook ||
       MPVLib.getPropertyBoolean("seekable") == false
     ) return@withReadyCore null
     val position = MPVLib.getPropertyDouble("time-pos")?.takeIf { it.isFinite() && it >= 0 } ?: return@withReadyCore null
@@ -1321,6 +1508,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
         }
         updateState { it.copy(paused = value) }
         propBoolean.emit(property, value)
+        refreshBufferingState()
       } else if (
         property == "mute" &&
         (playbackTransitionAudioGuardPreviousMute != null || seekAudioGuardPreviousMute != null)
@@ -1410,6 +1598,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
       }
       updateState { it.copy(paused = nextPaused) }
       propBoolean.emit("pause", nextPaused)
+      refreshBufferingState()
       nextPaused
     }
 
@@ -1438,6 +1627,35 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
 
   fun getPropertyNode(property: String): MPVNode? = withReadyCore(null) { MPVLib.getPropertyNode(property) }
 
+  /**
+   * Read dimensions, pixel aspect and rotation from one native snapshot of the loaded file.
+   * Before the first decoded frame, mpv can expose only w/h without rotate. That incomplete
+   * fallback must not turn a rotation-tagged portrait video into a temporary landscape window.
+   */
+  internal fun videoDisplayAspect(expectedGeneration: Long = state.value.generation): Double? = withReadyCore(null) {
+    val current = _state.value
+    if (expectedGeneration <= 0L || current.generation != expectedGeneration ||
+      current.activeGeneration != expectedGeneration || loadedGeneration != expectedGeneration
+    ) return@withReadyCore null
+    val params = MPVLib.getPropertyNode("video-params")?.toObject<JsonObject>(Json)
+      ?: return@withReadyCore null
+    val rotation = (params["rotate"] as? JsonPrimitive)?.intOrNull ?: return@withReadyCore null
+    fun positive(name: String): Double? = (params[name] as? JsonPrimitive)?.doubleOrNull
+      ?.takeIf { it.isFinite() && it > 0.0 }
+    val aspect = positive("aspect") ?: run {
+      val width = positive("dw")
+      val height = positive("dh")
+      if (width != null && height != null) {
+        width / height
+      } else {
+        val sourceWidth = positive("w") ?: return@withReadyCore null
+        val sourceHeight = positive("h") ?: return@withReadyCore null
+        sourceWidth * (positive("par") ?: 1.0) / sourceHeight
+      }
+    }
+    PlayerOrientationPolicy.displayAspect(aspect, rotation)
+  }
+
   fun setPropertyString(
     property: String,
     value: String,
@@ -1449,7 +1667,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
       }
       if (property == "vid") {
         if (value == "no" && _state.value.phase in setOf(PlaybackPhase.READY, PlaybackPhase.BACKGROUND)) {
-          val activeVid = MPVLib.getPropertyInt("vid") ?: -1
+          val activeVid = MPVLib.getPropertyString("vid")?.toIntOrNull() ?: -1
           if (activeVid > 0) {
             suspendedVideoTrack = SuspendedVideoTrack(activeVid, _state.value.generation)
           }
@@ -1462,10 +1680,13 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
       // Some shader-stack managers replace the whole list instead of using change-list/remove.
       // If that replacement drops Ambient, restore the base video scale before the next frame.
       if (property == "glsl-shaders" && activeAmbientShaderPaths.isNotEmpty() && !value.contains(AMBIENT_SHADER_PREFIX)) {
-        resetActiveAmbientScaleLocked()
+        applyAmbientRenderStateLocked(listOf("glsl-shaders" to value))
         activeAmbientShaderPaths.clear()
+        return@withCore
       }
-      MPVLib.setPropertyString(property, value)
+      // A preference update can race with a shader install. Enforce the composition boundary
+      // under the same native lock, rather than trusting a blend value calculated before it.
+      MPVLib.setPropertyString(property, if (property == "blend-subtitles" && isAmbientShaderActive) "no" else value)
     }
   }
 
@@ -1531,6 +1752,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     propLong.emit(property, null)
     propInt.emit(property, null)
     propNode.emit(property, null)
+    if (property in BUFFERING_STATUS_PROPERTIES) refreshBufferingState()
     observerSnapshot().forEach { observer -> runCatching { observer.eventProperty(property) } }
   }
 
@@ -1556,6 +1778,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
       if (property == "pause" && _state.value.phase == PlaybackPhase.LOADING) _state.value.paused else value
     if (property == "pause") updateState { it.copy(paused = effectiveValue) }
     propBoolean.emit(property, effectiveValue)
+    if (property in BUFFERING_STATUS_PROPERTIES) refreshBufferingState()
     observerSnapshot().forEach { observer -> runCatching { observer.eventProperty(property, effectiveValue) } }
   }
 
@@ -1630,17 +1853,15 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
             // once instead of allowing pause writes to race the load operation. Saved-position
             // loads stay paused until PlayerActivity finishes the database lookup and seek.
             MPVLib.setPropertyBoolean("pause", appliedPaused)
-            // Surface ownership is the source of truth at this boundary. Activity observers can
-            // detach during recreation, and deferred-generation bookkeeping only covers loads that
-            // started without video. Repair a disabled selection before exposing READY so an
-            // attached player cannot remain on a black frame with audio.
-            if (current.surfaceAttached && current.currentItem?.isDefinitelyAudioOnly() != true) {
-              val selectedVideoTrack = MPVLib.getPropertyInt("vid")
+            // FILE_LOADED and native renderer activation can arrive in either order. JNI surface
+            // attachment alone is not readiness: selecting video before wid/vo are active can
+            // make MediaCodec drop the track. Also cover a Surface lost during an in-flight load.
+            if (current.currentItem?.videoSelection() == PlaybackVideoSelection.IMMEDIATE &&
+              suspendedVideoTrack == null
+            ) {
+              val selectedVideoTrack = MPVLib.getPropertyString("vid")?.toIntOrNull()
               if (selectedVideoTrack == null || selectedVideoTrack <= 0) {
-                MPVLib.setPropertyString("vid", "auto")
-              }
-              if (deferredVideoSelectionGeneration == current.generation) {
-                deferredVideoSelectionGeneration = null
+                deferredVideoSelectionGeneration = current.generation
               }
             }
             updateState {
@@ -1660,6 +1881,8 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
             }
             propBoolean.emit("pause", appliedPaused)
             restoreSuspendedVideoTrackLocked()
+            applyDeferredVideoSelectionLocked()
+            refreshBufferingState()
             true
           }
           MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
@@ -1676,6 +1899,7 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
             if (_state.value.phase != PlaybackPhase.STOPPING) {
               schedulePlaybackTransitionAudioGuardRestoreLocked(PLAYBACK_TRANSITION_AUDIO_RESTORE_DELAY_MS)
             }
+            refreshBufferingState()
             true
           }
           MPVLib.MpvEvent.MPV_EVENT_END_FILE -> {
@@ -1747,6 +1971,8 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
             releaseActiveNetworkStream()
             releaseAuxiliaryNetworkStreams()
             suspendedVideoTrack = null
+            lastSurfaceVideoTrack = null
+            rendererOutputReady = false
             deferredVideoSelectionGeneration = null
             desiredPaused = true
             loadedGeneration = 0L
@@ -1774,6 +2000,48 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     if (shouldForward) {
       observerSnapshot().forEach { observer -> runCatching { observer.event(eventId, data) } }
     }
+  }
+
+  /**
+   * Sample the active native file under the session lock instead of combining cached properties
+   * from different loads in Compose. core-idle/seeking also cover decoder and renderer restarts;
+   * only paused-for-cache establishes that playback is actually waiting for buffered media.
+   */
+  private fun refreshBufferingState() {
+    nativeLock.withLock {
+      val current = _state.value
+      val loadedItem = loadedPlaybackItem
+      val canBuffer =
+        initialized &&
+          current.phase in setOf(PlaybackPhase.READY, PlaybackPhase.BACKGROUND) &&
+          current.activeGeneration == current.generation &&
+          loadedGeneration == current.generation &&
+          loadedItem != null &&
+          loadedItem.stableId == current.currentItem?.stableId &&
+          loadedItem.playableUri == current.currentItem?.playableUri &&
+          !current.paused
+      val buffering =
+        canBuffer &&
+          MPVLib.getPropertyBoolean("paused-for-cache") == true &&
+          MPVLib.getPropertyBoolean("eof-reached") != true &&
+          activeFileUsesNetworkLocked()
+      if (buffering) {
+        // Never label a new stall with a previous file's cached fill values.
+        propInt.emit("cache-buffering-state", MPVLib.getPropertyInt("cache-buffering-state"))
+        propDouble.emit("demuxer-cache-duration", MPVLib.getPropertyDouble("demuxer-cache-duration"))
+      }
+      updateState { it.copy(isBuffering = buffering) }
+    }
+  }
+
+  private fun activeFileUsesNetworkLocked(): Boolean {
+    // Inspect the source mpv is actually playing: a downloaded URL is local, while SMB, HLS and
+    // torrent streams can arrive through an HTTP loopback proxy. Do not infer this from the
+    // original URL, the torrent engine's global state, or an external network subtitle/audio track.
+    val path = MPVLib.getPropertyString("path") ?: return false
+    val scheme = path.substringBefore("://", missingDelimiterValue = "").lowercase()
+    if (scheme.isEmpty() || scheme in setOf("file", "content", "fd", "archive", "memory", "hex")) return false
+    return path.requiresStreamingOptions() || MPVLib.getPropertyBoolean("demuxer-via-network") == true
   }
 
   private fun shouldSuppressTimelineUpdate(property: String): Boolean =
@@ -1915,14 +2183,56 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     }
   }
 
+  /** Read one coherent geometry snapshot; never guess a 16:9 frame during a file transition. */
+  internal fun ambientGeometry(): AmbientGeometry? = withReadyCore(null) {
+    if ((MPVLib.getPropertyInt("video-params/w") ?: 0) <= 0) return@withReadyCore null
+    val aspect = VideoAspectGeometry.currentEffectiveDisplayAspect() ?: return@withReadyCore null
+    AmbientGeometry.calculate(
+      width = MPVLib.getPropertyInt("osd-width") ?: 0,
+      height = MPVLib.getPropertyInt("osd-height") ?: 0,
+      aspect = aspect,
+      panscan = MPVLib.getPropertyDouble("panscan") ?: 0.0,
+      zoom = getPropertyDouble("video-zoom") ?: 0.0,
+      panX = getPropertyDouble("video-pan-x") ?: 0.0,
+      panY = getPropertyDouble("video-pan-y") ?: 0.0,
+      alignX = MPVLib.getPropertyDouble("video-align-x") ?: 0.0,
+      alignY = MPVLib.getPropertyDouble("video-align-y") ?: 0.0,
+      recenter = MPVLib.getPropertyBoolean("video-recenter") ?: false,
+    )
+  }
+
+  /** Shader, canvas and subtitle policy change together, without an intermediate stretched frame. */
+  internal fun installAmbientShader(path: String, geometry: AmbientGeometry, generation: Long): Boolean =
+    withReadyCore(false) {
+      if (_state.value.generation != generation || !geometry.hasBars ||
+        MpvConfigOverridePolicy.ownsAny(MpvConfigControlledFeatures.AMBIENT) ||
+        ambientGeometry() != geometry
+      ) return@withReadyCore false
+      val shaderOptions = activeAmbientShaderPaths.map { "glsl-shaders-remove" to it } +
+        ("glsl-shaders-append" to path)
+      applyAmbientRenderStateLocked(shaderOptions, geometry.canvasScaleX, geometry.canvasScaleY, true)
+      desiredAmbientScaleX = geometry.canvasScaleX
+      desiredAmbientScaleY = geometry.canvasScaleY
+      activeAmbientShaderPaths.clear()
+      activeAmbientShaderPaths += path
+      true
+    }
+
+  internal fun clearAmbientShader(): Boolean = withCore(true) {
+    clearAmbientShadersLocked(resetDesired = true)
+  }
+
   private fun handleAmbientShaderCommandLocked(command: Array<out String>): Boolean {
     if (command.size < 3 || command[0] != "change-list" || command[1] != "glsl-shaders") return false
 
     val action = command[2]
     if (action == "clr") {
-      if (activeAmbientShaderPaths.isNotEmpty()) resetActiveAmbientScaleLocked()
+      if (activeAmbientShaderPaths.isEmpty()) {
+        MPVLib.command(*command)
+      } else {
+        applyAmbientRenderStateLocked(listOf("glsl-shaders-clr" to ""))
+      }
       activeAmbientShaderPaths.clear()
-      MPVLib.command(*command)
       return true
     }
 
@@ -1930,38 +2240,33 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     val isAmbient = isAmbientShaderPath(path)
 
     if (action == "set" && !isAmbient && activeAmbientShaderPaths.isNotEmpty()) {
-      resetActiveAmbientScaleLocked()
+      applyAmbientRenderStateLocked(listOf("glsl-shaders" to path))
       activeAmbientShaderPaths.clear()
-      MPVLib.command(*command)
       return true
     }
     if (!isAmbient) return false
 
     when (action) {
       "remove" -> {
-        // Reset first so there is never a rendered frame with Ambient's expanded source quad but
-        // without the remapping shader that restores the original picture in the centre.
-        resetActiveAmbientScaleLocked()
-        activeAmbientShaderPaths.remove(path)
-        MPVLib.command(*command)
-      }
-      "append", "add", "pre", "set" -> {
-        // A cancelled/debounced Ambient coroutine may finish its file write after Ambient was turned
-        // off. Identity scale is the process-wide teardown state, so never let that late shader
-        // resurrect itself. This is especially important for Flow because SCALE_X/Y are baked into
-        // the GLSL and can crop the centre picture even after the real video scale was reset.
-        if (ambientScaleIsIdentityLocked()) {
-          activeAmbientShaderPaths.remove(path)
-          resetActiveAmbientScaleLocked()
-          Log.w(TAG, "Ignored stale Ambient shader install while scale is identity: $path")
+        if (path !in activeAmbientShaderPaths) {
+          MPVLib.command(*command)
           return true
         }
+        applyAmbientRenderStateLocked(listOf("glsl-shaders-remove" to path))
+        activeAmbientShaderPaths.remove(path)
+      }
+      "append", "add", "pre", "set" -> {
+        // New installs use installAmbientShader with a media generation and geometry snapshot.
+        // Generic stack reordering may only move the currently installed program.
+        if (path !in activeAmbientShaderPaths) return true
 
-        // Install the shader first. Only then expose the staged scale values to the renderer.
-        MPVLib.command(*command)
-        if (action == "set") activeAmbientShaderPaths.clear()
+        val shaderOptions = buildList {
+          activeAmbientShaderPaths.forEach { oldPath -> add("glsl-shaders-remove" to oldPath) }
+          add((if (action == "set") "glsl-shaders" else "glsl-shaders-$action") to path)
+        }
+        applyAmbientRenderStateLocked(shaderOptions, desiredAmbientScaleX, desiredAmbientScaleY, true)
+        activeAmbientShaderPaths.clear()
         activeAmbientShaderPaths += path
-        applyDesiredAmbientScaleLocked()
       }
       else -> return false
     }
@@ -1973,54 +2278,74 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     return fileName.startsWith(AMBIENT_SHADER_PREFIX) && fileName.endsWith(AMBIENT_SHADER_SUFFIX)
   }
 
-  private fun ambientScaleIsIdentityLocked(): Boolean =
-    kotlin.math.abs(desiredAmbientScaleX - 1.0) <= AMBIENT_SCALE_EPSILON &&
-      kotlin.math.abs(desiredAmbientScaleY - 1.0) <= AMBIENT_SCALE_EPSILON
-
-  private fun clearAmbientShadersLocked(resetDesired: Boolean) {
-    // Reset the real video quad before removing OUTPUT remappers. This avoids exposing a single
-    // expanded/cropped frame during teardown.
-    resetActiveAmbientScaleLocked()
-
-    val stalePaths = activeAmbientShaderPaths.toList()
-    activeAmbientShaderPaths.clear()
-    if (!MpvConfigOverridePolicy.isOwnedByMpvConf("glsl-shaders")) {
-      stalePaths.forEach { path ->
-        runCatching { MPVLib.command("change-list", "glsl-shaders", "remove", path) }
-          .onFailure { error -> Log.w(TAG, "Failed to remove stale Ambient shader $path", error) }
+  private fun clearAmbientShadersLocked(resetDesired: Boolean): Boolean {
+    if (activeAmbientShaderPaths.isNotEmpty() || isAmbientShaderActive) {
+      try {
+        applyAmbientRenderStateLocked(activeAmbientShaderPaths.map { path -> "glsl-shaders-remove" to path })
+      } catch (error: Exception) {
+        Log.w(TAG, "Failed to clear Ambient render state", error)
+        return false
       }
     }
-
+    activeAmbientShaderPaths.clear()
     if (resetDesired) {
       desiredAmbientScaleX = 1.0
       desiredAmbientScaleY = 1.0
     }
+    return true
   }
 
-  private fun applyDesiredAmbientScaleLocked() {
-    // Bypass the interceptor — we already hold the staged values and need them applied
-    // to the renderer immediately after the ambient shader has been installed.
-    if (!MpvConfigOverridePolicy.isOwnedByMpvConf("video-scale-x")) {
-      MPVLib.setPropertyDouble("video-scale-x", desiredAmbientScaleX)
+  private fun applyAmbientRenderStateLocked(
+    shaderOptions: List<Pair<String, String>>,
+    scaleX: Double = 1.0,
+    scaleY: Double = 1.0,
+    ambientActive: Boolean = false,
+  ) {
+    val transform = ambientVideoTransform ?: if (ambientActive) {
+      ambientTransformProperties.associateWith { MPVLib.getPropertyDouble(it) ?: 0.0 }.toMutableMap()
+    } else null
+    val options = buildList {
+      if (!MpvConfigOverridePolicy.isOwnedByMpvConf("glsl-shaders")) addAll(shaderOptions)
+      if (!MpvConfigOverridePolicy.isOwnedByMpvConf("video-scale-x")) add("video-scale-x" to scaleX.toString())
+      if (!MpvConfigOverridePolicy.isOwnedByMpvConf("video-scale-y")) add("video-scale-y" to scaleY.toString())
+      transform?.forEach { (name, value) ->
+        if (!MpvConfigOverridePolicy.isOwnedByMpvConf(name)) {
+          add(name to if (ambientActive) "0" else value.toString())
+        }
+      }
+      if (!MpvConfigOverridePolicy.isOwnedByMpvConf("blend-subtitles")) {
+        add("blend-subtitles" to subtitleBlendMode(ambientActive))
+      }
     }
-    if (!MpvConfigOverridePolicy.isOwnedByMpvConf("video-scale-y")) {
-      MPVLib.setPropertyDouble("video-scale-y", desiredAmbientScaleY)
+    if (options.isEmpty()) return
+    val config = options.joinToString("\n") { (name, value) ->
+      require(value.none { it == '\n' || it == '\r' || it == '\u0000' })
+      "$name=%${value.toByteArray(Charsets.UTF_8).size}%$value"
     }
-  }
-
-  private fun resetActiveAmbientScaleLocked() {
-    if (!MpvConfigOverridePolicy.isOwnedByMpvConf("video-scale-x")) {
-      runCatching { MPVLib.setPropertyDouble("video-scale-x", 1.0) }
-    }
-    if (!MpvConfigOverridePolicy.isOwnedByMpvConf("video-scale-y")) {
-      runCatching { MPVLib.setPropertyDouble("video-scale-y", 1.0) }
-    }
+    MPVLib.command("load-config-file", "memory://$config")
+    ambientVideoTransform = transform.takeIf { ambientActive }
+    isAmbientShaderActive = ambientActive
   }
 
   private fun resetAmbientShaderTrackingLocked() {
+    ambientVideoTransform = null
+    isAmbientShaderActive = false
     activeAmbientShaderPaths.clear()
     desiredAmbientScaleX = 1.0
     desiredAmbientScaleY = 1.0
+  }
+
+  /**
+   * Selects video for a load that started before its Surface existed, once the file has loaded and
+   * the renderer is ready. These can arrive in either order, including while a saved-position
+   * restore keeps the phase at LOADING; missing one leaves audio playing over a black screen.
+   */
+  private fun applyDeferredVideoSelectionLocked() {
+    val current = _state.value
+    if (deferredVideoSelectionGeneration != current.generation) return
+    if (!rendererOutputReady || !current.surfaceAttached || loadedGeneration != current.generation) return
+    MPVLib.setPropertyString("vid", "auto")
+    deferredVideoSelectionGeneration = null
   }
 
   private fun restoreSuspendedVideoTrackLocked() {
@@ -2030,11 +2355,14 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
       suspendedVideoTrack = null
       return
     }
-    if (!current.surfaceAttached || current.phase !in setOf(PlaybackPhase.READY, PlaybackPhase.BACKGROUND)) return
+    if (!rendererOutputReady || !current.surfaceAttached || loadedGeneration != current.generation ||
+      current.phase !in setOf(PlaybackPhase.READY, PlaybackPhase.BACKGROUND)
+    ) return
 
     runCatching { MPVLib.setPropertyInt("vid", suspended.id) }
       .onSuccess {
         suspendedVideoTrack = null
+        deferredVideoSelectionGeneration = null
         Log.d(TAG, "Restored video track ${suspended.id} after Surface reattachment")
       }.onFailure { error ->
         Log.w(TAG, "Failed to restore video track ${suspended.id} after Surface reattachment", error)
@@ -2072,11 +2400,14 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     )
     // demuxer-lavf-o only reaches demuxer-internal opens (HLS/DASH segments). The primary http(s)
     // URL is opened by stream_lavf, which reads stream-lavf-o; without it a dropped connection or
-    // one failed seek-reopen permanently stalls network playback (endless buffering).
+    // one failed seek-reopen permanently stalls network playback (endless buffering). Persistent
+    // connections are pointless against the loopback proxies, which close every response.
+    val viaLoopbackProxy = playableUri.startsWith("http://127.0.0.1:")
     setPropertyString(
       "stream-lavf-o",
-      "reconnect=1,reconnect_on_network_error=1,reconnect_on_http_error=5xx,reconnect_streamed=1," +
-        "reconnect_delay_max=5,reconnect_max_retries=5,reconnect_delay_total_max=20",
+      (if (viaLoopbackProxy) "http_persistent=0," else "") +
+        "reconnect=1,reconnect_on_network_error=1,reconnect_on_http_error=5xx," +
+        "reconnect_streamed=1,reconnect_delay_max=5,reconnect_max_retries=5,reconnect_delay_total_max=20",
     )
     Log.d(TAG, "Applied streaming options for the first network item of this core")
   }
@@ -2209,11 +2540,11 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
 
   private inline fun <T> withCore(
     default: T,
-    allowInitializing: Boolean = true,
+    allowInitializing: Boolean = false,
     block: () -> T,
   ): T =
     nativeLock.withLock {
-      if (!initialized && !(allowInitializing && _state.value.phase == PlaybackPhase.INITIALIZING)) {
+      if (!nativeCoreReady && !(allowInitializing && _state.value.phase == PlaybackPhase.INITIALIZING)) {
         return@withLock default
       }
       block()
@@ -2229,6 +2560,20 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     }
 
   private inline fun updateState(transform: (PlaybackSessionState) -> PlaybackSessionState) {
-    _state.update(transform)
+    _state.update { previous ->
+      val next = transform(previous)
+      // Every pause, stop, error, shutdown and source/generation change invalidates the old stall
+      // synchronously, including transitions that do not produce another cache-property event.
+      if (next.isBuffering &&
+        (next.paused || next.phase !in setOf(PlaybackPhase.READY, PlaybackPhase.BACKGROUND) ||
+          next.activeGeneration != next.generation || next.generation != previous.generation ||
+          next.currentItem?.stableId != previous.currentItem?.stableId ||
+          next.currentItem?.playableUri != previous.currentItem?.playableUri)
+      ) {
+        next.copy(isBuffering = false)
+      } else {
+        next
+      }
+    }
   }
 }
