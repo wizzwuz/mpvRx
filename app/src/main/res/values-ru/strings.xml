@@ -2802,4 +2802,6 @@
   <string name="player_sheets_aspect_ratio_decrease_vertical_zoom">Уменьшить верт. масштаб</string>
   <string name="player_sheets_aspect_ratio_increase_vertical_zoom">Увеличить верт. масштаб</string>
   <string name="player_sheets_aspect_ratio_reset_advanced_zoom">Сбросить расширенное масштабирование</string>
+  <string name="pref_player_remember_video_zoom_title">Запоминать позицию зума</string>
+  <string name="pref_player_remember_video_zoom_summary">Автоматически восстанавливать зум и панорамирование для новых видео</string>
 </resources>

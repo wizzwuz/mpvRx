@@ -529,15 +529,21 @@ fun PlayerSheets(
         videoPanY = videoPanY,
         onZoomChange = { zoom ->
           viewModel.setVideoZoom(zoom)
-          playerPreferences.defaultVideoZoom.set(zoom)
+          if (playerPreferences.rememberVideoZoom.get()) {
+            playerPreferences.defaultVideoZoom.set(zoom)
+          }
         },
         onPanXChange = { panX ->
           viewModel.setVideoPanX(panX)
-          playerPreferences.defaultVideoPanX.set(panX)
+          if (playerPreferences.rememberVideoZoom.get()) {
+            playerPreferences.defaultVideoPanX.set(panX)
+          }
         },
         onPanYChange = { panY ->
           viewModel.setVideoPanY(panY)
-          playerPreferences.defaultVideoPanY.set(panY)
+          if (playerPreferences.rememberVideoZoom.get()) {
+            playerPreferences.defaultVideoPanY.set(panY)
+          }
         },
         advancedZoomEnabled = advancedZoomEnabled,
         videoScaleX = videoScaleX,

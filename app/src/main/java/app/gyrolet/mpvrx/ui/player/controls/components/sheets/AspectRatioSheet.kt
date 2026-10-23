@@ -53,6 +53,9 @@ import app.gyrolet.mpvrx.ui.player.AutoCropState
 import app.gyrolet.mpvrx.ui.icons.Icon
 import app.gyrolet.mpvrx.ui.icons.Icons
 import app.gyrolet.mpvrx.ui.theme.spacing
+import app.gyrolet.mpvrx.preferences.PlayerPreferences
+import app.gyrolet.mpvrx.preferences.preference.collectAsState
+import org.koin.compose.koinInject
 import kotlin.math.round
 
 data class AspectRatio(
@@ -198,6 +201,37 @@ fun AspectRatioSheet(
         androidx.compose.ui.res.stringResource(
           app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_manual_zoom_pan_title,
         ),
+      )
+
+      val playerPreferences = koinInject<PlayerPreferences>()
+      val rememberVideoZoom by playerPreferences.rememberVideoZoom.collectAsState()
+
+      ListItem(
+        content = {
+          Text(
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.pref_player_remember_video_zoom_title,
+            ),
+          )
+        },
+        supportingContent = {
+          Text(
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.pref_player_remember_video_zoom_summary,
+            ),
+          )
+        },
+        trailingContent = {
+          IconSwitch(
+            checked = rememberVideoZoom,
+            onCheckedChange = null,
+          )
+        },
+        modifier =
+          Modifier.clickable {
+            playerPreferences.rememberVideoZoom.set(!rememberVideoZoom)
+          },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
       )
 
       ListItem(

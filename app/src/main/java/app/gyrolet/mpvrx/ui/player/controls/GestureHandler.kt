@@ -292,10 +292,6 @@ fun GestureHandler(
         }
 
         if (!handled) {
-          if (anyPanelShown && !allowGesturesInPanels) {
-            if (panelShown != Panels.None) viewModel.panelShown.update { Panels.None }
-            if (externalPanelShown) onDismissExternalPanel()
-          }
           if (controlsShown) {
             viewModel.hideControls()
           } else {

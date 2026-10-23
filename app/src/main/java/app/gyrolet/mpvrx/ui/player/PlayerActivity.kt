@@ -4888,17 +4888,23 @@ class PlayerActivity :
         if (!hasState) {
           withContext(Dispatchers.Main) {
             if (!PlaybackSession.isCurrentGeneration(loadGeneration)) return@withContext
-            val zoomPreference = playerPreferences.defaultVideoZoom.get()
-            viewModel.setVideoZoom(zoomPreference)
-            val panXPreference = playerPreferences.defaultVideoPanX.get()
-            val panYPreference = playerPreferences.defaultVideoPanY.get()
-            if (panXPreference != 0f || panYPreference != 0f) {
-              viewModel.setVideoPan(panXPreference, panYPreference)
-            }
-            if (playerPreferences.advancedZoomEnabled.get()) {
-              viewModel.setAdvancedZoomEnabled(true)
-              viewModel.setVideoScaleX(playerPreferences.defaultVideoScaleX.get())
-              viewModel.setVideoScaleY(playerPreferences.defaultVideoScaleY.get())
+            if (playerPreferences.rememberVideoZoom.get()) {
+              val zoomPreference = playerPreferences.defaultVideoZoom.get()
+              viewModel.setVideoZoom(zoomPreference)
+              val panXPreference = playerPreferences.defaultVideoPanX.get()
+              val panYPreference = playerPreferences.defaultVideoPanY.get()
+              if (panXPreference != 0f || panYPreference != 0f) {
+                viewModel.setVideoPan(panXPreference, panYPreference)
+              }
+              if (playerPreferences.advancedZoomEnabled.get()) {
+                viewModel.setAdvancedZoomEnabled(true)
+                viewModel.setVideoScaleX(playerPreferences.defaultVideoScaleX.get())
+                viewModel.setVideoScaleY(playerPreferences.defaultVideoScaleY.get())
+              }
+            } else {
+              viewModel.setVideoZoom(0f)
+              viewModel.setVideoPan(0f, 0f)
+              viewModel.setAdvancedZoomEnabled(false)
             }
           }
         }
