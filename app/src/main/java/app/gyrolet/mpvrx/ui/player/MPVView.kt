@@ -366,8 +366,12 @@ class MPVView(
     )
   }
 
-  fun getVideoOutAspect(expectedGeneration: Long = PlaybackSession.state.value.generation): Double? =
-    PlaybackSession.videoDisplayAspect(expectedGeneration)
+  /**
+   * On-screen aspect of the current video with rotation metadata applied, or null while unknown.
+   * See [VideoDisplayGeometry] for why this never falls back to the unrotated top-level size.
+   */
+  fun getVideoOutAspect(): Double? =
+    VideoDisplayGeometry.read()?.displayAspect?.takeIf { it.isFinite() && it > 0.0 }
 
   class TrackDelegate(
     private val name: String,
@@ -706,6 +710,8 @@ class MPVView(
     mapOf(
       "pause" to MPVLib.MpvFormat.MPV_FORMAT_FLAG,
       "paused-for-cache" to MPVLib.MpvFormat.MPV_FORMAT_FLAG,
+      // Network seeks wait for data too; the buffering indicator reacts to both.
+      "seeking" to MPVLib.MpvFormat.MPV_FORMAT_FLAG,
       "cache-buffering-state" to MPVLib.MpvFormat.MPV_FORMAT_INT64,
       "demuxer-cache-duration" to MPVLib.MpvFormat.MPV_FORMAT_DOUBLE,
       "demuxer-cache-time" to MPVLib.MpvFormat.MPV_FORMAT_DOUBLE,

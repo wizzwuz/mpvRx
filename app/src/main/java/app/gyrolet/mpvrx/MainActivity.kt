@@ -89,6 +89,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.viewinterop.AndroidView
 import app.gyrolet.mpvrx.ui.player.MPVPipHelper
+import app.gyrolet.mpvrx.ui.player.InAppMusicPlayerSheet
+import app.gyrolet.mpvrx.ui.player.LocalInAppMusicSheet
+import app.gyrolet.mpvrx.ui.player.coveredByInAppMusicSheet
+import app.gyrolet.mpvrx.ui.player.inAppMusicSheetMiniSource
+import app.gyrolet.mpvrx.ui.player.rememberInAppMusicSheetState
 import app.gyrolet.mpvrx.ui.player.PlaybackPhase
 import app.gyrolet.mpvrx.ui.player.PlaybackSession
 import app.gyrolet.mpvrx.ui.player.PlayerActivity
@@ -118,6 +123,9 @@ import app.gyrolet.mpvrx.ui.update.UpdateViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import androidx.lifecycle.lifecycleScope
 import kotlinx.serialization.json.Json
 import org.koin.android.ext.android.getKoin
@@ -139,6 +147,7 @@ open class MainActivity : AppCompatActivity() {
   private var pendingPipExitResolution = false
   private var isExpandingFromPip by mutableStateOf(false)
   private var openUpdateSheet by mutableStateOf(false)
+  private var mediaDiscoveryJob: Job? = null
 
   // Register the ActivityResultLauncher at class level
   private val mediaAccessLauncher =
@@ -285,16 +294,21 @@ open class MainActivity : AppCompatActivity() {
       } else {
         MpvrxTheme(transitionState = themeTransitionState) {
           AppWallpaperHost {
+            val musicSheet = rememberInAppMusicSheetState()
             // Reserve the system button area once for every destination and overlay.
             // Consuming it here lets nested Scaffolds/sheets avoid adding it twice.
-            Surface(
-              modifier = Modifier.fillMaxSize().windowInsetsPadding(
-                WindowInsets.tappableElement.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
-              ),
-              color = Color.Transparent,
-            ) {
-              Navigator()
+            CompositionLocalProvider(LocalInAppMusicSheet provides musicSheet) {
+              Surface(
+                modifier = Modifier.fillMaxSize().windowInsetsPadding(
+                  WindowInsets.tappableElement.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
+                ),
+                color = Color.Transparent,
+              ) {
+                Navigator()
+              }
             }
+            // Above the browser and outside its inset padding: the music player fills the window.
+            InAppMusicPlayerSheet(musicSheet)
             if (showRendererBuildNotice) {
               val acknowledgeNotice = {
                 rendererNoticePreferences.edit().putBoolean(NON_VULKAN_NOTICE_SHOWN, true).apply()
@@ -362,9 +376,20 @@ open class MainActivity : AppCompatActivity() {
     PlayerSheetTransitions.clearBrowserCache()
     // Interactive again without the player having taken over, so its expansion is void.
     PlayerSheetTransitions.abandonExpansion()
+    mediaDiscoveryJob?.cancel()
+    mediaDiscoveryJob = lifecycleScope.launch(Dispatchers.IO) {
+      // Let the cached browser draw first. A second bounded pass catches extraction that was
+      // still finishing when the user switched back; there is no continuous storage polling.
+      delay(350L)
+      app.gyrolet.mpvrx.utils.storage.UnindexedVideoDiscovery.refresh(applicationContext)
+      delay(2_000L)
+      app.gyrolet.mpvrx.utils.storage.UnindexedVideoDiscovery.refresh(applicationContext)
+    }
   }
 
   override fun onPause() {
+    mediaDiscoveryJob?.cancel()
+    mediaDiscoveryJob = null
     // Still on screen here, so this is the last point where the browser layer can be frozen
     // for the player's swipe-down and predictive-back previews.
     PlayerSheetTransitions.captureBrowser()
@@ -648,6 +673,7 @@ open class MainActivity : AppCompatActivity() {
     }
     val liquidGlassEnabled by appearancePreferences.liquidGlassEnabled.collectAsState()
     val legacyNavigationBar by appearancePreferences.legacyNavigationBar.collectAsState()
+    val musicSheet = LocalInAppMusicSheet.current
 
     // Provide both LocalBackStack and the LazyList/Grid states to all screens
     CompositionLocalProvider(
@@ -694,6 +720,7 @@ open class MainActivity : AppCompatActivity() {
               modifier =
                 Modifier
                   .fillMaxSize()
+                  .coveredByInAppMusicSheet(musicSheet)
                   .playerSheetBackdrop()
                   .captureLiquidGlassBackdrop(miniPlayerBackdrop, liquidGlassEnabled),
               backStack = typedBackstack,
@@ -759,7 +786,9 @@ open class MainActivity : AppCompatActivity() {
             backdrop = miniPlayerBackdrop,
             enabled = liquidGlassEnabled,
           ) {
-            MiniPlayer(modifier = miniPlayerModifier)
+            MiniPlayer(
+              modifier = miniPlayerModifier.inAppMusicSheetMiniSource(musicSheet, AppShapeScale.largeIncreased),
+            )
           }
           PlayerSheetTransitionOverlay(PlayerSheetDestination.MINI, Modifier.matchParentSize())
         }

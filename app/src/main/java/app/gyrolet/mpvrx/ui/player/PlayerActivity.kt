@@ -99,7 +99,6 @@ import app.gyrolet.mpvrx.preferences.AppearancePreferences
 import app.gyrolet.mpvrx.preferences.AudioChannels
 import app.gyrolet.mpvrx.preferences.AudioPreferences
 import app.gyrolet.mpvrx.preferences.BrowserPreferences
-import app.gyrolet.mpvrx.domain.media.model.UNKNOWN_VIDEO_ROTATION
 import app.gyrolet.mpvrx.domain.thumbnail.ThumbnailRepository
 import app.gyrolet.mpvrx.domain.thumbnail.getArtwork
 import app.gyrolet.mpvrx.domain.thumbnail.isLocalArtworkSource
@@ -1536,6 +1535,9 @@ class PlayerActivity :
         viewModel.isAudioOnly.collect { isAudioOnly ->
           if (isAudioOnly) {
             applyPlaybackBrightnessPolicy(isAudio = true)
+            // A video-mode launch without trusted geometry holds its orientation until mpv reports
+            // the source; an audio-only result never will, so switch to the audio preference now.
+            setOrientation()
             viewModel.showControls()
             binding.player.visibility = View.INVISIBLE
             try {
@@ -2901,9 +2903,6 @@ class PlayerActivity :
     PlaybackActivityOwner.beginRequest(playbackOwnerToken) {
       lastExitBackPressAtMs = null
       mediaRequestGeneration++
-      videoParamRefreshJob?.cancel()
-      videoParamRefreshJob = null
-      pendingVideoParamRefreshRequiresShaderReload = false
     }
 
   private fun isCurrentMediaRequest(requestGeneration: Long): Boolean =
@@ -4243,11 +4242,18 @@ class PlayerActivity :
     vararg sources: Map<String, String>,
   ): Map<String, String> {
     if (!HttpUtils.isNetworkStream(uri)) return emptyMap()
-    var headers = PlaybackHttpHeaders.merge(*sources)
+    var headers = PlaybackSession.resolveHttpHeaders(uri.toString(), *sources)
     headers = PlaybackHttpHeaders.withDefault(headers, "Referer", HttpUtils.extractRefererDomain(uri))
     headers = PlaybackHttpHeaders.withDefault(headers, "User-Agent", NetworkUserAgent.resolve(this))
     return headers
   }
+
+  /** Keep queue metadata explicit; resolve config defaults and inferred headers at request time. */
+  private fun buildMediaHeaders(
+    uri: Uri?,
+    vararg sources: Map<String, String>,
+  ): Map<String, String> =
+    if (HttpUtils.isNetworkStream(uri)) PlaybackHttpHeaders.merge(*sources) else emptyMap()
 
   private fun applyHttpHeaders(headers: Map<String, String>) {
     PlaybackSession.setPropertyString("user-agent", PlaybackHttpHeaders.userAgent(headers).orEmpty())
@@ -4453,11 +4459,14 @@ class PlayerActivity :
     when (property) {
       "video-params/w",
       "video-params/h",
-      "video-params/rotate",
       -> {
         // Safety check: don't access MPV during cleanup
         if (!mpvInitialized || player.isExiting || isFinishing) return
-        scheduleVideoParamRefresh(reloadShaders = property != "video-params/rotate")
+        scheduleVideoParamRefresh(reloadShaders = true)
+      }
+      "video-params/rotate" -> {
+        if (!mpvInitialized || player.isExiting || isFinishing) return
+        scheduleVideoParamRefresh(reloadShaders = false)
       }
     }
   }
@@ -4677,8 +4686,6 @@ class PlayerActivity :
 
   @Synchronized
   private fun scheduleVideoParamRefresh(reloadShaders: Boolean) {
-    val generation = PlaybackSession.state.value.generation
-    val requestGeneration = mediaRequestGeneration
     pendingVideoParamRefreshRequiresShaderReload =
       pendingVideoParamRefreshRequiresShaderReload ||
       reloadShaders
@@ -4688,14 +4695,19 @@ class PlayerActivity :
       lifecycleScope.launch {
         delay(100)
         if (!mpvInitialized || player.isExiting || isFinishing) return@launch
-        if (!isCurrentMediaRequest(requestGeneration) || !PlaybackSession.isCurrentGeneration(generation)) return@launch
 
-        val aspect =
-          withContext(playbackRenderDispatcher) {
-            player.getVideoOutAspect(generation)
+        // Pin the read to the file that is loaded now. Observer events from the previous file can
+        // still be queued when the next request starts, and their geometry must not rotate it.
+        val generation = PlaybackSession.loadedMediaGeneration()
+        val geometry =
+          if (generation > 0L) {
+            withContext(playbackRenderDispatcher) { VideoDisplayGeometry.read(generation) }
+          } else {
+            null
           }
-        if (!isCurrentMediaRequest(requestGeneration) || !PlaybackSession.isCurrentGeneration(generation)) return@launch
-        Log.d(TAG, "Coalesced video params refresh, aspect: $aspect")
+        if (generation > 0L && !PlaybackSession.isCurrentGeneration(generation)) return@launch
+        val aspect = geometry?.displayAspect
+        Log.d(TAG, "Coalesced video params refresh, geometry: $geometry, display aspect: $aspect")
         PlayerOrientationPolicy.rememberVideoAspect(PlaybackSession.state.value.currentItem?.stableId, aspect)
         pipHelper.updatePictureInPictureParams()
 
@@ -4951,12 +4963,9 @@ class PlayerActivity :
     if (playerPreferences.orientation.get() != PlayerOrientation.Video) {
       setOrientation()
     }
-    lifecycleScope.launch {
-      delay(100)
-      if (PlaybackSession.isCurrentGeneration(loadGeneration) && mpvInitialized && !player.isExiting && !isFinishing) {
-        setOrientation()
-      }
-    }
+    // The demuxer's geometry (with container rotation) is readable from FILE_LOADED, well before
+    // the decoder publishes video-params, so orientation and PiP can settle without a frame.
+    scheduleVideoParamRefresh(reloadShaders = false)
 
     applySubtitlePreferences()
     applyVideoFilterPreferences()
@@ -5837,6 +5846,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     val previousItemWasReady = isReady
 
     setIntent(intent)
+    applyInitialVideoOrientation(intent)
     applyPlaybackBrightnessPolicy(isAudio = isCurrentMediaKnownAudio())
     if (!beginMediaRequest()) return
     cancelPlaybackLoadRecovery()
@@ -5975,7 +5985,6 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
         return@let
       }
 
-      applyInitialVideoOrientation(intent)
       currentPlayableUri = uri
       isReady = false
       viewModel.onVideoLoadStarted()
@@ -6019,7 +6028,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     val requestGeneration = mediaRequestGeneration
     val requestedSource = originalUri ?: extractUriFromIntent(sourceIntent)?.toString() ?: playableUri
     val requestedHeaders =
-      buildPlaybackHeaders(
+      buildMediaHeaders(
         Uri.parse(requestedSource),
         PlaybackHttpHeaders.fromFlatPairs(sourceIntent.extras?.getStringArray("headers")),
         requestedQueueItem?.headers.orEmpty(),
@@ -6717,11 +6726,8 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
         PlayerOrientationPolicy.forAudioPreference(audioPreferences.audioOrientation.get())
       } else {
         val preference = playerPreferences.orientation.get()
-        // A hand-set aspect ratio is a deliberate override of the picture's shape, so keep the
-        // current orientation rather than rotating to the source geometry behind the user's back.
-        if (preference == PlayerOrientation.Video && hasCustomAspectRatio()) {
-          return
-        }
+        // A custom aspect ratio is already represented in the effective video geometry.
+        // Do not freeze "Video" orientation just because a custom ratio was saved earlier.
         PlayerOrientationPolicy.forPreference(preference) {
           (sourceAspect ?: player.getVideoOutAspect())?.also { aspect ->
             PlayerOrientationPolicy.rememberVideoAspect(PlaybackSession.state.value.currentItem?.stableId, aspect)
@@ -6758,9 +6764,6 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     if (requestedOrientation != target) requestedOrientation = target
   }
 
-  private fun hasCustomAspectRatio(): Boolean =
-    playerPreferences.lastCustomAspectRatio.get() > 0f
-
   /**
    * Orientation for "Video" mode before mpv exists, so the window opens the right way round.
    *
@@ -6772,8 +6775,11 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
    * not recreate the Activity; it relayouts the window mid-transition.
    *
    * Use only geometry already supplied by the launch intent. Missing metadata must not delay
-   * playback: MediaMetadataRetriever can stall on the same files as thumbnail extraction. The
-   * normal mpv video-parameter observer applies the orientation once complete geometry arrives.
+   * playback: MediaMetadataRetriever can stall on the same files as thumbnail extraction. When the
+   * rotation is unknown the current orientation is held instead of guessed — assuming 0 is exactly
+   * what opened portrait phone recordings in landscape and then flipped them. mpv's demuxer reports
+   * the real rotation at FILE_LOADED, before the first frame, and [scheduleVideoParamRefresh] /
+   * [handleFileLoaded] apply it.
    */
   private fun applyInitialVideoOrientation(sourceIntent: Intent) {
     if (isTelevision) {
@@ -6784,11 +6790,16 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
 
     val width = sourceIntent.getIntExtra(EXTRA_VIDEO_WIDTH, 0)
     val height = sourceIntent.getIntExtra(EXTRA_VIDEO_HEIGHT, 0)
-    // A missing angle is different from a confirmed zero. Hold the launch configuration until
-    // mpv supplies a complete snapshot instead of guessing landscape from encoded dimensions.
-    val rotation = sourceIntent.getIntExtra(EXTRA_VIDEO_ROTATION, UNKNOWN_VIDEO_ROTATION)
-    val initialOrientation = PlayerOrientationPolicy.forSourceGeometry(width, height, rotation)
-      ?: ActivityInfo.SCREEN_ORIENTATION_LOCKED
+    // Absent means unknown, not 0: browser rows only carry the extra when a trusted source set it.
+    val rotation =
+      if (sourceIntent.hasExtra(EXTRA_VIDEO_ROTATION)) {
+        VideoDisplayGeometry.normalizeQuarterTurn(sourceIntent.getIntExtra(EXTRA_VIDEO_ROTATION, 0))
+      } else {
+        null
+      }
+    val initialOrientation =
+      rotation?.let { PlayerOrientationPolicy.forSourceGeometry(width, height, it) }
+        ?: ActivityInfo.SCREEN_ORIENTATION_LOCKED
     if (requestedOrientation != initialOrientation) requestedOrientation = initialOrientation
   }
 
@@ -6873,6 +6884,16 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
           consumedTvRemoteKeys += keyCode
           if ((event?.repeatCount ?: 0) == 0) viewModel.pauseUnpause()
           viewModel.showControls()
+          return true
+        }
+        TvPlayerRemoteAction.TOGGLE_MENU -> {
+          consumedTvRemoteKeys += keyCode
+          if ((event?.repeatCount ?: 0) == 0) toggleTvSheet(Sheets.More)
+          return true
+        }
+        TvPlayerRemoteAction.TOGGLE_SUBTITLES -> {
+          consumedTvRemoteKeys += keyCode
+          if ((event?.repeatCount ?: 0) == 0 && !viewModel.isAudioOnly.value) toggleTvSheet(Sheets.SubtitleTracks)
           return true
         }
         TvPlayerRemoteAction.DELEGATE -> {
@@ -7022,6 +7043,17 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
         event?.let { player.onKey(it) }
         return super.onKeyDown(keyCode, event)
       }
+    }
+  }
+
+  private fun toggleTvSheet(sheet: Sheets) {
+    if (viewModel.sheetShown.value == sheet) {
+      viewModel.sheetShown.update { Sheets.None }
+      viewModel.showControls()
+    } else {
+      viewModel.panelShown.update { Panels.None }
+      viewModel.sheetShown.update { sheet }
+      viewModel.hideControls()
     }
   }
 
@@ -8278,7 +8310,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
             ?.takeIf { it.isNotBlank() }
             ?.let { userAgent -> mapOf("User-Agent" to userAgent) }
             .orEmpty()
-        val headers = buildPlaybackHeaders(uri, networkPlaylistHeaders.getOrNull(index).orEmpty(), storedHeaders)
+        val headers = buildMediaHeaders(uri, networkPlaylistHeaders.getOrNull(index).orEmpty(), storedHeaders)
         val existingItem =
           existingQueueItems.firstOrNull { it.originalUri == uri.toString() || it.playableUri == uri.toString() }
 
@@ -8686,11 +8718,12 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     sourceIntent: Intent,
     requestGeneration: Long,
   ): Boolean {
-    val requestHeaders =
-      buildPlaybackHeaders(
+    val sourceHeaders =
+      buildMediaHeaders(
         Uri.parse(uriString),
         PlaybackHttpHeaders.fromFlatPairs(sourceIntent.extras?.getStringArray("headers")),
       )
+    val requestHeaders = buildPlaybackHeaders(Uri.parse(uriString), sourceHeaders)
     val userAgent = PlaybackHttpHeaders.userAgent(requestHeaders)
     val parseResult =
       when {
@@ -8727,9 +8760,9 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
           networkPlaylistPaths = items.map { it.url }
           networkPlaylistHeaders =
             items.map { item ->
-              buildPlaybackHeaders(
+              buildMediaHeaders(
                 Uri.parse(item.url),
-                requestHeaders,
+                sourceHeaders,
                 item.userAgent?.let { mapOf("User-Agent" to it) }.orEmpty(),
               )
             }

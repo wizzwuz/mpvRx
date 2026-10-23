@@ -18,6 +18,7 @@ import app.gyrolet.mpvrx.domain.torrent.formatTorrentSpeed
 
 import android.content.res.Configuration.ORIENTATION_PORTRAIT
 import android.os.Debug
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -29,6 +30,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -84,6 +87,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -134,6 +138,7 @@ import app.gyrolet.mpvrx.preferences.preference.plusAssign
 import app.gyrolet.mpvrx.ui.icons.Icon
 import app.gyrolet.mpvrx.ui.icons.Icons
 import app.gyrolet.mpvrx.ui.player.Decoder.Companion.getDecoderFromValue
+import app.gyrolet.mpvrx.ui.player.InAppMusicSheetState
 import app.gyrolet.mpvrx.ui.player.Panels
 import app.gyrolet.mpvrx.ui.player.PlayerActivity
 import app.gyrolet.mpvrx.ui.player.PlayerUpdates
@@ -162,6 +167,7 @@ import app.gyrolet.mpvrx.ui.player.controls.components.TextPlayerUpdate
 import app.gyrolet.mpvrx.ui.player.controls.components.VolumeSlider
 import app.gyrolet.mpvrx.ui.player.controls.components.playerButtonContentColor
 import app.gyrolet.mpvrx.ui.player.controls.components.rememberBufferingState
+import app.gyrolet.mpvrx.ui.player.controls.components.BufferingPhase
 import app.gyrolet.mpvrx.ui.player.controls.components.rememberTvInitialFocusRequester
 import app.gyrolet.mpvrx.ui.player.controls.components.tvFocusHighlight
 import app.gyrolet.mpvrx.ui.player.controls.components.tvInitialFocus
@@ -182,6 +188,9 @@ import app.gyrolet.mpvrx.ui.liquidglass.AdaptiveControlsContainer
 import app.gyrolet.mpvrx.ui.liquidglass.LiquidPillButton
 import app.gyrolet.mpvrx.ui.liquidglass.LocalKyantPlayerBackdrop
 import app.gyrolet.mpvrx.ui.liquidglass.LocalPlayerHdrOutputEnabled
+import app.gyrolet.mpvrx.ui.liquidglass.LocalPlayerLiquidGlassActive
+import app.gyrolet.mpvrx.ui.player.shouldUseTextureRendering
+import app.gyrolet.mpvrx.preferences.DecoderPreferences
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlin.math.abs
@@ -195,6 +204,160 @@ fun <T> playerControlsExitAnimationSpec(durationMillis: Int = 300): FiniteAnimat
 
 fun <T> playerControlsEnterAnimationSpec(durationMillis: Int = 100): FiniteAnimationSpec<T> =
   tween(durationMillis = durationMillis, easing = LinearOutSlowInEasing)
+
+/**
+ * The full music player with its sheets and panels. PlayerActivity shows it for audio, and the
+ * browser's in-app sheet ([inAppSheet]) shows the same screen live while the service keeps playing.
+ */
+@Composable
+@Suppress("ViewModelForwarding")
+internal fun AudioPlayerScreen(
+  viewModel: PlayerViewModel,
+  onBackPress: () -> Unit,
+  modifier: Modifier = Modifier,
+  titleForControls: () -> String? = { null },
+  inAppSheet: InAppMusicSheetState? = null,
+) {
+  val playerPreferences = koinInject<PlayerPreferences>()
+  val appearancePreferences = koinInject<AppearancePreferences>()
+  val enableLiquidGlass by appearancePreferences.liquidGlassEnabled.collectAsState()
+  val playbackQueue by PlaybackSession.queue.collectAsStateWithLifecycle()
+  val currentPlaybackItem = playbackQueue.currentItem
+  val chapters by viewModel.playbackChapters.collectAsState(persistentListOf())
+  val playbackSpeed by PlaybackSession.propFloat["speed"].collectAsState()
+  val configuredDecoder by PlaybackSession.propString["hwdec"].collectAsState()
+  val activeDecoder by PlaybackSession.propString["hwdec-current"].collectAsState()
+  val decoder = remember(activeDecoder, configuredDecoder) {
+    getDecoderFromValue(activeDecoder?.takeIf { it.isNotBlank() } ?: configuredDecoder ?: "auto")
+  }
+  val onOpenSheet: (Sheets) -> Unit = remember(viewModel) {
+    {
+      viewModel.sheetShown.update { _ -> it }
+      if (it == Sheets.None) {
+        viewModel.showControls()
+      } else {
+        viewModel.hideControls()
+        viewModel.panelShown.update { Panels.None }
+      }
+    }
+  }
+  val onOpenPanel: (Panels) -> Unit = remember(viewModel) {
+    {
+      viewModel.panelShown.update { _ -> it }
+      if (it == Panels.None) {
+        viewModel.showControls()
+      } else {
+        viewModel.hideControls()
+        viewModel.sheetShown.update { Sheets.None }
+      }
+    }
+  }
+
+  val audioBook by app.gyrolet.mpvrx.ui.player.AudiobookPlayback.book.collectAsState()
+  val audioPositionState = viewModel.precisePosition.collectAsState()
+  // Only the chapter index is needed here. Reading the position clock directly re-ran this whole
+  // screen every polling tick; a derived index recomposes only when the chapter changes.
+  val audioChapterIndex by remember(chapters, currentPlaybackItem, audioBook) {
+    derivedStateOf {
+      val audioPosition = audioPositionState.value
+      val audioTimelinePosition = currentPlaybackItem?.audiobook?.let { info ->
+        audioBook?.takeIf { it.book.id == info.bookId }?.positionInBook(info.trackId, (audioPosition * 1000).toLong())?.div(1000f)
+      } ?: audioPosition
+      chapters.indexOfLast {
+        it.start <= audioTimelinePosition
+      }
+    }
+  }
+  val rawMediaTitle by PlaybackSession.propString["media-title"].collectAsState()
+  val queuedTitle =
+    playbackQueue.currentItem?.title?.takeIf { playbackQueue.isExplicitQueue && it.isNotBlank() }
+  val currentTitleForControls by rememberUpdatedState(titleForControls)
+  val mediaTitle =
+    remember(queuedTitle, rawMediaTitle) {
+      queuedTitle
+        ?: currentTitleForControls()
+        ?: rawMediaTitle?.takeIf { it.isNotBlank() }
+    }
+
+  val sheetShown by viewModel.sheetShown.collectAsState()
+  val panel by viewModel.panelShown.collectAsState()
+  val subtitles by viewModel.subtitleTracks.collectAsState(persistentListOf())
+  val audioTracks by viewModel.audioTracks.collectAsState(persistentListOf())
+  val speedPresets by playerPreferences.speedPresets.collectAsState()
+  val sortedSpeedPresets = remember(speedPresets) { speedPresets.map { it.toFloat() }.sorted() }
+
+  if (inAppSheet != null) {
+    // PlayerActivity closes sheets and panels from its own back handling; the browser does not.
+    BackHandler(enabled = sheetShown != Sheets.None || panel != Panels.None) {
+      if (panel != Panels.None) onOpenPanel(Panels.None) else onOpenSheet(Sheets.None)
+    }
+  }
+
+  // Only sheets and panels sample this layer; the controls would otherwise sample themselves.
+  val audioBackdrop = rememberLayerBackdrop()
+  Box(modifier = modifier.fillMaxSize()) {
+    AudioPlayerControls(
+      viewModel = viewModel,
+      mediaTitle = mediaTitle,
+      onBackPress = onBackPress,
+      onOpenSheet = onOpenSheet,
+      onOpenPanel = onOpenPanel,
+      modifier = if (enableLiquidGlass) Modifier.layerBackdrop(audioBackdrop) else Modifier,
+      sheetBackdrop = audioBackdrop.takeIf { enableLiquidGlass },
+      inAppSheet = inAppSheet,
+    )
+
+    CompositionLocalProvider(
+      LocalKyantPlayerBackdrop provides audioBackdrop.takeIf { enableLiquidGlass },
+    ) {
+      PlayerSheets(
+        viewModel = viewModel,
+        sheetShown = sheetShown,
+        subtitles = subtitles.toImmutableList(),
+        onAddSubtitle = viewModel::addSubtitle,
+        onToggleSubtitle = viewModel::toggleSubtitle,
+        isSubtitleSelected = viewModel::isSubtitleSelected,
+        subtitleSelectionIndicator = viewModel::subtitleSelectionIndicator,
+        onRemoveSubtitle = viewModel::removeSubtitle,
+        audioTracks = audioTracks.toImmutableList(),
+        onAddAudio = viewModel::addAudio,
+        onSelectAudio = viewModel::selectAudioTrack,
+        chapter = chapters.getOrNull(audioChapterIndex),
+        chapters = chapters.toImmutableList(),
+        onSeekToChapter = {
+          chapters.getOrNull(it)?.let(viewModel::seekToPlaybackChapter)
+        },
+        decoder = decoder,
+        onUpdateDecoder = { PlaybackSession.setPropertyString("hwdec", it.value) },
+        speed = playbackSpeed ?: playerPreferences.defaultSpeed.get(),
+        onSpeedChange = {
+          if (currentPlaybackItem?.audiobook != null) app.gyrolet.mpvrx.ui.player.AudiobookPlayback.setSpeed(it.toFixed(2))
+          else PlaybackSession.setPropertyFloat("speed", it.toFixed(2))
+        },
+        onMakeDefaultSpeed = { playerPreferences.defaultSpeed.set(it.toFixed(2)) },
+        onAddSpeedPreset = { playerPreferences.speedPresets += it.toFixed(2).toString() },
+        onRemoveSpeedPreset = { playerPreferences.speedPresets -= it.toFixed(2).toString() },
+        onResetSpeedPresets = playerPreferences.speedPresets::delete,
+        speedPresets = sortedSpeedPresets,
+        onResetDefaultSpeed = {
+          val speed = playerPreferences.defaultSpeed.deleteAndGet().toFixed(2)
+          if (currentPlaybackItem?.audiobook != null) app.gyrolet.mpvrx.ui.player.AudiobookPlayback.setSpeed(speed)
+          else PlaybackSession.setPropertyFloat("speed", speed)
+        },
+        onStartSleepTimer = viewModel::startTimer,
+        onOpenPanel = onOpenPanel,
+        onShowSheet = onOpenSheet,
+        onDismissRequest = { onOpenSheet(Sheets.None) },
+      )
+
+      PlayerPanels(
+        panelShown = panel,
+        viewModel = viewModel,
+        onDismissRequest = { onOpenPanel(Panels.None) },
+      )
+    }
+  }
+}
 
 @OptIn(
   ExperimentalMaterial3Api::class,
@@ -218,8 +381,18 @@ fun PlayerControls(
   val aiEnabled by aiPreferences.enabled.collectAsState()
   val realtimeSubsEnabled by aiPreferences.realtimeSubsEnabled.collectAsState()
   val hideBackground by appearancePreferences.hidePlayerButtonsBackground.collectAsState()
-  val enableLiquidGlass by appearancePreferences.liquidGlassEnabled.collectAsState()
+  val liquidGlassPreference by appearancePreferences.liquidGlassEnabled.collectAsState()
   val liquidGlassInHdr by appearancePreferences.liquidGlassInHdr.collectAsState()
+  val hdrOutputPreference by koinInject<DecoderPreferences>().hdrScreenOutput.collectAsState()
+  // Glass needs the video on the Compose-recordable renderer, so this mirrors the renderer choice.
+  // When HDR output keeps the video on a native surface ("Liquid glass in HDR" off, or HDR owned by
+  // mpv.conf), every player control uses its regular form, exactly as with Liquid Glass off.
+  val enableLiquidGlass =
+    shouldUseTextureRendering(
+      liquidGlass = liquidGlassPreference,
+      hdrOutput = hdrOutputPreference,
+      liquidGlassInHdr = liquidGlassInHdr,
+    )
   val forceDarkButtonBackground by appearancePreferences.forceDarkPlayerButtonsBackground.collectAsState()
   val portraitPlaybackControlsPosition by
     appearancePreferences.portraitPlaybackControlsPosition.collectAsState()
@@ -274,10 +447,21 @@ fun PlayerControls(
   val showLoadingCircle by playerPreferences.showLoadingCircle.collectAsState()
 
   var isSeeking by remember { mutableStateOf(false) }
+  // Opening a network item (including link resolution before mpv starts) waits on the network too.
+  val openingNetworkStream =
+    videoOpenAnimState.isWaitingForVideo &&
+      playbackSessionState.error == null &&
+      playbackSessionState.phase != app.gyrolet.mpvrx.ui.player.PlaybackPhase.ERROR &&
+      currentQueueItem?.let { item ->
+        sequenceOf(item.playableUri, item.originalUri).any { uri ->
+          app.gyrolet.mpvrx.utils.media.HttpUtils.isNetworkStream(android.net.Uri.parse(uri))
+        }
+      } == true
   val bufferingState =
     rememberBufferingState(
       enabled = showLoadingCircle && !isSeeking,
       sessionState = playbackSessionState,
+      openingNetworkStream = openingNetworkStream,
     )
   val isMpvBuffering = bufferingState.isCacheStall
   val safeAreaWindow by playerPreferences.safeAreaWindow.collectAsState()
@@ -371,101 +555,12 @@ fun PlayerControls(
       DeclaredPlaybackMediaKind.UNKNOWN -> isAudioOnly || activity?.isCurrentMediaKnownAudio() == true
     }
   if (useAudioPlayer) {
-    val audioBook by app.gyrolet.mpvrx.ui.player.AudiobookPlayback.book.collectAsState()
-    val audioPositionState = viewModel.precisePosition.collectAsState()
-    // Only the chapter index is needed here. Reading the position clock directly re-ran this whole
-    // branch every polling tick; a derived index recomposes only when the chapter changes.
-    val audioChapterIndex by remember(chapters, currentPlaybackItem, audioBook) {
-      derivedStateOf {
-        val audioPosition = audioPositionState.value
-        val audioTimelinePosition = currentPlaybackItem?.audiobook?.let { info ->
-          audioBook?.takeIf { it.book.id == info.bookId }?.positionInBook(info.trackId, (audioPosition * 1000).toLong())?.div(1000f)
-        } ?: audioPosition
-        chapters.indexOfLast {
-          it.start <= audioTimelinePosition
-        }
-      }
-    }
-    val rawMediaTitle by PlaybackSession.propString["media-title"].collectAsState()
-    val queuedTitle =
-      playbackQueue.currentItem?.title?.takeIf { playbackQueue.isExplicitQueue && it.isNotBlank() }
-    val mediaTitle =
-      remember(queuedTitle, rawMediaTitle, activity) {
-        queuedTitle
-          ?: activity?.getTitleForControls()
-          ?: rawMediaTitle?.takeIf { it.isNotBlank() }
-      }
-
-    val sheetShown by viewModel.sheetShown.collectAsState()
-    val subtitles by viewModel.subtitleTracks.collectAsState(persistentListOf())
-    val audioTracks by viewModel.audioTracks.collectAsState(persistentListOf())
-    val speedPresets by playerPreferences.speedPresets.collectAsState()
-    val sortedSpeedPresets = remember(speedPresets) { speedPresets.map { it.toFloat() }.sorted() }
-
-    // Only sheets and panels sample this layer; the controls would otherwise sample themselves.
-    val audioBackdrop = rememberLayerBackdrop()
-    Box(modifier = modifier.fillMaxSize()) {
-      AudioPlayerControls(
-        viewModel = viewModel,
-        mediaTitle = mediaTitle,
-        onBackPress = onBackPress,
-        onOpenSheet = onOpenSheet,
-        onOpenPanel = onOpenPanel,
-        modifier = if (enableLiquidGlass) Modifier.layerBackdrop(audioBackdrop) else Modifier,
-        sheetBackdrop = audioBackdrop.takeIf { enableLiquidGlass },
-      )
-
-      CompositionLocalProvider(
-        LocalKyantPlayerBackdrop provides audioBackdrop.takeIf { enableLiquidGlass },
-      ) {
-      PlayerSheets(
-        viewModel = viewModel,
-        sheetShown = sheetShown,
-        subtitles = subtitles.toImmutableList(),
-        onAddSubtitle = viewModel::addSubtitle,
-        onToggleSubtitle = viewModel::toggleSubtitle,
-        isSubtitleSelected = viewModel::isSubtitleSelected,
-        subtitleSelectionIndicator = viewModel::subtitleSelectionIndicator,
-        onRemoveSubtitle = viewModel::removeSubtitle,
-        audioTracks = audioTracks.toImmutableList(),
-        onAddAudio = viewModel::addAudio,
-        onSelectAudio = viewModel::selectAudioTrack,
-        chapter = chapters.getOrNull(audioChapterIndex),
-        chapters = chapters.toImmutableList(),
-        onSeekToChapter = {
-          chapters.getOrNull(it)?.let(viewModel::seekToPlaybackChapter)
-        },
-        decoder = decoder,
-        onUpdateDecoder = { PlaybackSession.setPropertyString("hwdec", it.value) },
-        speed = playbackSpeed ?: playerPreferences.defaultSpeed.get(),
-        onSpeedChange = {
-          if (currentPlaybackItem?.audiobook != null) app.gyrolet.mpvrx.ui.player.AudiobookPlayback.setSpeed(it.toFixed(2))
-          else PlaybackSession.setPropertyFloat("speed", it.toFixed(2))
-        },
-        onMakeDefaultSpeed = { playerPreferences.defaultSpeed.set(it.toFixed(2)) },
-        onAddSpeedPreset = { playerPreferences.speedPresets += it.toFixed(2).toString() },
-        onRemoveSpeedPreset = { playerPreferences.speedPresets -= it.toFixed(2).toString() },
-        onResetSpeedPresets = playerPreferences.speedPresets::delete,
-        speedPresets = sortedSpeedPresets,
-        onResetDefaultSpeed = {
-          val speed = playerPreferences.defaultSpeed.deleteAndGet().toFixed(2)
-          if (currentPlaybackItem?.audiobook != null) app.gyrolet.mpvrx.ui.player.AudiobookPlayback.setSpeed(speed)
-          else PlaybackSession.setPropertyFloat("speed", speed)
-        },
-        onStartSleepTimer = viewModel::startTimer,
-        onOpenPanel = onOpenPanel,
-        onShowSheet = onOpenSheet,
-        onDismissRequest = { onOpenSheet(Sheets.None) },
-      )
-
-      val panel by viewModel.panelShown.collectAsState()
-      PlayerPanels(
-        panelShown = panel,
-        viewModel = viewModel,
-        onDismissRequest = { onOpenPanel(Panels.None) },
-      )
-      }
-    }
+    AudioPlayerScreen(
+      viewModel = viewModel,
+      onBackPress = onBackPress,
+      modifier = modifier,
+      titleForControls = { activity?.getTitleForControls() },
+    )
     return
   }
 
@@ -615,6 +710,113 @@ fun PlayerControls(
     label = "controls_edge_vignette",
   )
 
+  if (isTelevision) {
+    val tvSheetShown by viewModel.sheetShown.collectAsState()
+    val tvPanelShown by viewModel.panelShown.collectAsState()
+    val tvSubtitles by viewModel.subtitleTracks.collectAsState(persistentListOf())
+    val tvAudioTracks by viewModel.audioTracks.collectAsState(persistentListOf())
+    val tvSpeedPresets by playerPreferences.speedPresets.collectAsState()
+    val tvSortedSpeedPresets = remember(tvSpeedPresets) { tvSpeedPresets.map { it.toFloat() }.sorted() }
+    val tvChapterStarts = remember(chapters) { chapters.map { it.start } }
+
+    CompositionLocalProvider(
+      LocalPlayerHdrOutputEnabled provides isHdrOutputEnabled,
+      LocalPlayerLiquidGlassActive provides enableLiquidGlass,
+      LocalForceDarkPlayerButtonsBackground provides forceDarkButtonBackground,
+      LocalHidePlayerButtonsBackground provides hideBackground,
+    ) {
+      PlayerControlsContentTheme {
+        Box(
+          modifier =
+            modifier
+              .fillMaxSize()
+              .clipToBounds()
+              .onSizeChanged { playerBounds = it },
+        ) {
+          VideoOpenAnimationOverlay(
+            style = videoOpenAnim,
+            speedMultiplier = animSpeed,
+            animationState = videoOpenAnimState,
+          )
+          DoubleTapToSeekOvals(
+            amount = doubleTapSeekAmount,
+            showOvals = showDoubleTapOvals,
+            showSeekIcon = showSeekTime,
+            showSeekTime = showSeekTime,
+            rippleRequest = seekRippleRequest,
+          )
+          MediaScopesOverlay(
+            viewModel = viewModel,
+            audioTracks = scopeAudioTracks.toImmutableList(),
+            durationSeconds = seekbarDuration,
+            modifier = Modifier.fillMaxSize(),
+          )
+
+          TvPlayerControls(
+            viewModel = viewModel,
+            controlsShown = controlsShown,
+            overlayOpen = tvSheetShown != Sheets.None || tvPanelShown != Panels.None,
+            paused = paused == true,
+            mediaTitle = mediaTitle,
+            chapterTitle = currentChapter?.let(chapters::getOrNull)?.name,
+            durationSeconds = seekbarDuration,
+            chapterStarts = tvChapterStarts,
+            hasSubtitles = true,
+            hasAudioTracks = tvAudioTracks.isNotEmpty(),
+            hasChapters = chapters.isNotEmpty(),
+            showQualityButton = showVideoQualitySelector,
+            playbackSpeed = playbackSpeed ?: 1f,
+            skipSegmentLabel = currentSkippableSegment?.label,
+            showBuffering = showBufferingIndicator,
+            autoHideMillis = playerTimeToDisappear.toLong(),
+            onOpenSheet = onOpenSheet,
+          )
+
+          PlayerSheets(
+            viewModel = viewModel,
+            sheetShown = tvSheetShown,
+            subtitles = tvSubtitles.toImmutableList(),
+            onAddSubtitle = viewModel::addSubtitle,
+            onToggleSubtitle = viewModel::toggleSubtitle,
+            isSubtitleSelected = viewModel::isSubtitleSelected,
+            subtitleSelectionIndicator = viewModel::subtitleSelectionIndicator,
+            onRemoveSubtitle = viewModel::removeSubtitle,
+            audioTracks = tvAudioTracks.toImmutableList(),
+            onAddAudio = viewModel::addAudio,
+            onSelectAudio = viewModel::selectAudioTrack,
+            chapter = currentChapter?.let(chapters::getOrNull),
+            chapters = chapters.toImmutableList(),
+            onSeekToChapter = {
+              chapters.getOrNull(it)?.let(viewModel::seekToPlaybackChapter)
+            },
+            decoder = decoder,
+            onUpdateDecoder = { PlaybackSession.setPropertyString("hwdec", it.value) },
+            speed = playbackSpeed ?: playerPreferences.defaultSpeed.get(),
+            onSpeedChange = { PlaybackSession.setPropertyFloat("speed", it.toFixed(2)) },
+            onMakeDefaultSpeed = { playerPreferences.defaultSpeed.set(it.toFixed(2)) },
+            onAddSpeedPreset = { playerPreferences.speedPresets += it.toFixed(2).toString() },
+            onRemoveSpeedPreset = { playerPreferences.speedPresets -= it.toFixed(2).toString() },
+            onResetSpeedPresets = playerPreferences.speedPresets::delete,
+            speedPresets = tvSortedSpeedPresets,
+            onResetDefaultSpeed = {
+              PlaybackSession.setPropertyFloat("speed", playerPreferences.defaultSpeed.deleteAndGet().toFixed(2))
+            },
+            onStartSleepTimer = viewModel::startTimer,
+            onOpenPanel = onOpenPanel,
+            onShowSheet = onOpenSheet,
+            onDismissRequest = { onOpenSheet(Sheets.None) },
+          )
+          PlayerPanels(
+            panelShown = tvPanelShown,
+            viewModel = viewModel,
+            onDismissRequest = { onOpenPanel(Panels.None) },
+          )
+        }
+      }
+    }
+    return
+  }
+
   GestureHandler(
     viewModel = viewModel,
     externalPanelShown = showControlsDrawer && isPlayerDrawerShown,
@@ -658,6 +860,7 @@ fun PlayerControls(
   CompositionLocalProvider(
     LocalKyantPlayerBackdrop provides playerKyantBackdrop,
     LocalPlayerHdrOutputEnabled provides isHdrOutputEnabled,
+    LocalPlayerLiquidGlassActive provides enableLiquidGlass,
     LocalForceDarkPlayerButtonsBackground provides forceDarkButtonBackground,
     LocalHidePlayerButtonsBackground provides hideBackground,
   ) {
@@ -1438,8 +1641,8 @@ is PlayerUpdates.FrameInfo -> {
 
           AnimatedVisibility(
             visible = showBufferingIndicator,
-            enter = fadeIn(),
-            exit = fadeOut(animationSpec = tween(0)),
+            enter = fadeIn(tween(200)) + scaleIn(initialScale = 0.88f, animationSpec = tween(200)),
+            exit = fadeOut(tween(250)) + scaleOut(targetScale = 0.88f, animationSpec = tween(250)),
             modifier =
               Modifier.constrainAs(bufferingIndicator) {
                 start.linkTo(parent.absoluteLeft)
@@ -1474,9 +1677,13 @@ is PlayerUpdates.FrameInfo -> {
                   }
                   // mpv only reports a fill target while it is actually holding playback for cache.
                   isMpvBuffering && cachePercent != null && cachePercent in 1..99 ->
-                    "Buffering $cachePercent%"
+                    stringResource(R.string.player_buffering_percent, cachePercent)
                   isMpvBuffering && cacheSeconds != null ->
-                    "Buffering (${String.format(java.util.Locale.ROOT, "%.1f", cacheSeconds)}s)"
+                    stringResource(
+                      R.string.player_buffering_seconds,
+                      String.format(java.util.Locale.getDefault(), "%.1f", cacheSeconds),
+                    )
+                  bufferingState.phase == BufferingPhase.OPENING -> stringResource(R.string.player_opening_stream)
                   else -> stringResource(R.string.ui_buffering)
                 }
               if (enableLiquidGlass) {

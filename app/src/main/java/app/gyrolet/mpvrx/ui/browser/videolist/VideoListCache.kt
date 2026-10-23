@@ -22,7 +22,7 @@ internal object VideoListCache {
   private const val TAG = "VideoListCache"
   private const val DIR = "video_list_cache"
   private const val MAX_FOLDERS = 64
-  // Reject snapshots that stored missing rotation as zero degrees.
+  // v3: rotation is nullable; older snapshots stored an unknown rotation as a trusted 0.
   private const val HEADER_PREFIX = "orientation_v3|"
 
   fun load(context: Context, key: String): List<Video>? =

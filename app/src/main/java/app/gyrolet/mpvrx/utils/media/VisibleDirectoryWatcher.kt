@@ -3,38 +3,23 @@
  */
 package app.gyrolet.mpvrx.utils.media
 
-import android.content.Context
-import android.media.MediaScannerConnection
 import android.os.FileObserver
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import app.gyrolet.mpvrx.BuildConfig
-import app.gyrolet.mpvrx.utils.storage.FileTypeUtils
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Watches only the directory currently visible in a browser, never an entire storage tree.
- * Coalesces writes/renames without waiting for a long import to finish. Stop when leaving RESUMED.
+ * Calls back once after bursts of writes/renames. Must stop when the screen leaves RESUMED.
  */
 class VisibleDirectoryWatcher(private val onChanged: () -> Unit) {
   private val handler = Handler(Looper.getMainLooper())
-  private val dispatchScheduled = AtomicBoolean(false)
-  private val dispatch = Runnable {
-    dispatchScheduled.set(false)
-    onChanged()
-  }
+  private val dispatch = Runnable { onChanged() }
   private var observer: FileObserver? = null
   private var watchedPath: String? = null
-  @Volatile private var scanContext: Context? = null
-  private val completedPaths = linkedSetOf<String>()
-  private val scanScheduled = AtomicBoolean(false)
-  private val scanCompleted = Runnable { scanCompletedFiles() }
 
-  fun watch(path: String, context: Context? = null) {
-    if (context != null) scanContext = context.applicationContext
+  fun watch(path: String) {
     if (path == watchedPath) return
     stop()
     val directory = File(path)
@@ -42,16 +27,8 @@ class VisibleDirectoryWatcher(private val onChanged: () -> Unit) {
     val next = object : FileObserver(path, EVENTS) {
       override fun onEvent(event: Int, path: String?) {
         if ((event and EVENTS) == 0) return
-        // Index final names only: CREATE may be an empty file or an unfinished download.
-        if (!BuildConfig.SCOPED_STORAGE_ONLY && scanContext != null && path != null &&
-          (event and (FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO)) != 0) {
-          val file = File(directory, path)
-          if (file.isFile && (FileTypeUtils.isVideoFile(file) || FileTypeUtils.isAudioFile(file))) {
-            synchronized(completedPaths) { completedPaths += file.absolutePath }
-            if (scanScheduled.compareAndSet(false, true)) handler.postDelayed(scanCompleted, 350L)
-          }
-        }
-        if (dispatchScheduled.compareAndSet(false, true)) handler.postDelayed(dispatch, 350L)
+        handler.removeCallbacks(dispatch)
+        handler.postDelayed(dispatch, 650L)
       }
     }
     try {
@@ -65,28 +42,9 @@ class VisibleDirectoryWatcher(private val onChanged: () -> Unit) {
 
   fun stop() {
     handler.removeCallbacks(dispatch)
-    dispatchScheduled.set(false)
     observer?.stopWatching()
     observer = null
     watchedPath = null
-    // Navigation must not discard completed files before the other browser modes can see them.
-    handler.removeCallbacks(scanCompleted)
-    scanCompletedFiles()
-  }
-
-  private fun scanCompletedFiles() {
-    scanScheduled.set(false)
-    val context = scanContext ?: return
-    val paths = synchronized(completedPaths) {
-      completedPaths.toTypedArray().also { completedPaths.clear() }
-    }
-    if (paths.isEmpty()) return
-    val remaining = AtomicInteger(paths.size)
-    runCatching {
-      MediaScannerConnection.scanFile(context, paths, null) { _, _ ->
-        if (remaining.decrementAndGet() == 0) MediaLibraryEvents.notifyChanged()
-      }
-    }.onFailure { Log.w(TAG, "Could not index completed media files", it) }
   }
 
   private companion object {
@@ -96,4 +54,3 @@ class VisibleDirectoryWatcher(private val onChanged: () -> Unit) {
       FileObserver.DELETE_SELF or FileObserver.MOVE_SELF
   }
 }
-

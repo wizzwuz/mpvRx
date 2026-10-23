@@ -126,6 +126,7 @@ import app.gyrolet.mpvrx.ui.icons.Icons
 import app.gyrolet.mpvrx.ui.theme.AppMotion
 import app.gyrolet.mpvrx.ui.utils.LocalBackStack
 import app.gyrolet.mpvrx.ui.utils.navigateTo
+import app.gyrolet.mpvrx.ui.utils.popUpTo
 import app.gyrolet.mpvrx.ui.utils.calculateResponsiveGridSpans
 import app.gyrolet.mpvrx.ui.utils.popSafely
 import app.gyrolet.mpvrx.utils.media.CopyPasteOps
@@ -811,7 +812,8 @@ fun FileSystemBrowserScreen(path: String? = null) {
                 isLoading = isSearchLoading,
                 videoFilesWithPlayback = videoFilesWithPlayback,
                 newVideoIds = newVideoIds,
-                showSubtitleIndicator = showSubtitleIndicator,
+                showSubtitleIndicator = showSubtitleIndicator && !isArchiveBrowser,
+                archiveMode = isArchiveBrowser,
                 isAtRoot = isAppRoot,
                 navigationBarHeight = navigationBarHeight,
                 isFabVisible = isFabVisible, // Pass FAB visibility state
@@ -841,7 +843,8 @@ fun FileSystemBrowserScreen(path: String? = null) {
                 breadcrumbs = breadcrumbs,
                 playlistMode = playlistMode,
                 itemsWereDeletedOrMoved = itemsWereDeletedOrMoved,
-                showSubtitleIndicator = showSubtitleIndicator,
+                showSubtitleIndicator = showSubtitleIndicator && !isArchiveBrowser,
+                archiveMode = isArchiveBrowser,
                 navigationBarHeight = navigationBarHeight,
                 onRefresh = { viewModel.refresh() },
                 onFolderClick = { folder ->
@@ -883,9 +886,17 @@ fun FileSystemBrowserScreen(path: String? = null) {
                   }
                 },
                 onBreadcrumbClick = { component ->
-                  // Navigate to the breadcrumb by popping until we reach it
-                  // or pushing if it's a new path
-                  backstack.navigateTo(FileSystemDirectoryScreen(component.fullPath))
+                  val target = FileSystemDirectoryScreen(component.fullPath)
+                  when {
+                    !ZipArchiveMedia.isBrowserPath(component.fullPath) -> backstack.navigateTo(target)
+                    component.fullPath == path -> Unit
+                    // Unwind to an ancestor already on the stack instead of stacking duplicates.
+                    target in backstack -> backstack.popUpTo { it == target }
+                    // The archive root is hosted by its playlist page, not a directory screen.
+                    ZipArchiveMedia.isArchiveRoot(component.fullPath) ->
+                      backstack.popUpTo { !(it is FileSystemDirectoryScreen && ZipArchiveMedia.isBrowserPath(it.path)) }
+                    else -> backstack.navigateTo(target)
+                  }
                 },
                 selectionManager = selectionManager,
                 modifier = Modifier,
@@ -996,6 +1007,7 @@ fun FileSystemBrowserScreen(path: String? = null) {
       onDismiss = { sortDialogOpen.value = false },
       isAtRoot = isAppRoot,
       onMetadataFieldEnabled = viewModel::refresh,
+      isArchive = isArchiveBrowser,
     )
 
     if (deleteDialogOpen) {
@@ -1235,6 +1247,13 @@ suspend fun searchRecursively(
 
   try {
     Log.d("FileSystemBrowserScreen", "Scanning directory: $directoryPath for query: $query")
+    if (ZipArchiveMedia.isBrowserPath(directoryPath)) {
+      // One central-directory read covers every nested ZIP folder.
+      return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        ZipArchiveMedia.allMedia(context, directoryPath, includeAudio = true).getOrDefault(emptyList())
+      }.filter { it.displayName.contains(query, ignoreCase = true) }
+        .map { video -> FileSystemItem.VideoFile(video.displayName, video.path, video.dateModified * 1000L, video) }
+    }
     // Scan the current directory
     val items =
       app.gyrolet.mpvrx.repository.MediaFileRepository
@@ -1294,7 +1313,7 @@ private suspend fun collectVideosForSelectionInfo(
     val path = pending.removeFirst()
     if (!visited.add(path)) continue
     val items = if (ZipArchiveMedia.isBrowserPath(path)) {
-      ZipArchiveMedia.scan(context, path, includeAudio = false)
+      ZipArchiveMedia.scan(context, path, includeAudio = true)
     } else {
       app.gyrolet.mpvrx.repository.MediaFileRepository.scanDirectory(context, path)
     }.getOrThrow()
@@ -1383,6 +1402,7 @@ private fun FileSystemBrowserContent(
   modifier: Modifier = Modifier,
   isInSelectionMode: Boolean = false,
   pinnedVideoPaths: Set<String> = emptySet(),
+  archiveMode: Boolean = false,
 ) {
   val swipeScope = rememberCoroutineScope()
   val swipeActions = rememberVideoSwipeActions { swipeScope.launch { onRefresh() } }
@@ -1430,20 +1450,21 @@ private fun FileSystemBrowserContent(
       thumbnailGenerator,
       swipeLeft,
       swipeRight,
+      archiveMode,
     ) {
       VideoCardUiConfig(
         unlimitedNameLines = unlimitedNameLines,
-        showThumbnails = showVideoThumbnails,
+        showThumbnails = showVideoThumbnails && !archiveMode,
         showSizeChip = showSizeChip,
-        showResolutionChip = showResolutionChip,
-        showFramerateInResolution = showFramerateInResolution,
-        showCodecSupportIndicator = showCodecSupportIndicator,
-        showProgressBar = showProgressBar,
+        showResolutionChip = showResolutionChip && !archiveMode,
+        showFramerateInResolution = showFramerateInResolution && !archiveMode,
+        showCodecSupportIndicator = showCodecSupportIndicator && !archiveMode,
+        showProgressBar = showProgressBar && !archiveMode,
         showDateChip = showDateChip,
         showUnplayedOldVideoLabel = showUnplayedOldVideoLabel,
         unplayedOldVideoDays = unplayedOldVideoDays,
         showExtensionField = showExtensionField,
-        showDurationField = showDurationField,
+        showDurationField = showDurationField && !archiveMode,
         centerGridTitles = centerGridTitles,
         thumbnailQuality = thumbnailQuality,
         thumbnailGenerator = thumbnailGenerator,
@@ -1452,7 +1473,16 @@ private fun FileSystemBrowserContent(
       )
     }
 
-  val folderCardUiConfig = rememberFolderCardUiConfig()
+  // ZIP entries carry no probed metadata or thumbnails; suppress fields that would stay empty.
+  val baseFolderCardUiConfig = rememberFolderCardUiConfig()
+  val folderCardUiConfig =
+    remember(baseFolderCardUiConfig, archiveMode) {
+      if (archiveMode) {
+        baseFolderCardUiConfig.copy(showTotalDurationChip = false, showFolderThumbnails = false)
+      } else {
+        baseFolderCardUiConfig
+      }
+    }
 
   // Calculate thumbnail dimensions for list mode
   val thumbWidthDp = 160.dp
@@ -1859,6 +1889,7 @@ private fun FileSystemSearchContent(
   onFolderClick: (FileSystemItem.Folder) -> Unit,
   onChanged: () -> Unit,
   modifier: Modifier = Modifier,
+  archiveMode: Boolean = false,
 ) {
   val swipeActions = rememberVideoSwipeActions(onChanged = onChanged)
   val swipePlaybackInfo = rememberSwipePlaybackInfo(
@@ -1906,20 +1937,21 @@ private fun FileSystemSearchContent(
       thumbnailGenerator,
       swipeLeft,
       swipeRight,
+      archiveMode,
     ) {
       VideoCardUiConfig(
         unlimitedNameLines = unlimitedNameLines,
-        showThumbnails = showVideoThumbnails,
+        showThumbnails = showVideoThumbnails && !archiveMode,
         showSizeChip = showSizeChip,
-        showResolutionChip = showResolutionChip,
-        showFramerateInResolution = showFramerateInResolution,
-        showCodecSupportIndicator = showCodecSupportIndicator,
-        showProgressBar = showProgressBar,
+        showResolutionChip = showResolutionChip && !archiveMode,
+        showFramerateInResolution = showFramerateInResolution && !archiveMode,
+        showCodecSupportIndicator = showCodecSupportIndicator && !archiveMode,
+        showProgressBar = showProgressBar && !archiveMode,
         showDateChip = showDateChip,
         showUnplayedOldVideoLabel = showUnplayedOldVideoLabel,
         unplayedOldVideoDays = unplayedOldVideoDays,
         showExtensionField = showExtensionField,
-        showDurationField = showDurationField,
+        showDurationField = showDurationField && !archiveMode,
         centerGridTitles = centerGridTitles,
         thumbnailQuality = thumbnailQuality,
         thumbnailGenerator = thumbnailGenerator,
@@ -1928,7 +1960,16 @@ private fun FileSystemSearchContent(
       )
     }
 
-  val folderCardUiConfig = rememberFolderCardUiConfig()
+  // ZIP entries carry no probed metadata or thumbnails; suppress fields that would stay empty.
+  val baseFolderCardUiConfig = rememberFolderCardUiConfig()
+  val folderCardUiConfig =
+    remember(baseFolderCardUiConfig, archiveMode) {
+      if (archiveMode) {
+        baseFolderCardUiConfig.copy(showTotalDurationChip = false, showFolderThumbnails = false)
+      } else {
+        baseFolderCardUiConfig
+      }
+    }
 
   val mediaLayoutMode by browserPreferences.mediaLayoutMode.collectAsState()
   val isGridMode = mediaLayoutMode == app.gyrolet.mpvrx.preferences.MediaLayoutMode.GRID

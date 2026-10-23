@@ -28,7 +28,7 @@ import app.gyrolet.mpvrx.utils.storage.MediaStoreGenerationGuard
 internal object MediaLibraryCache {
   private const val TAG = "MediaLibraryCache"
   private const val PREFS = "media_library_cache"
-  // Older snapshots conflated missing rotation with a confirmed zero-degree angle.
+  // v4: rotation is nullable; older snapshots stored an unknown rotation as a trusted 0.
   private const val KEY_VIDEOS = "videos_v4"
   private const val KEY_SCAN_OPTIONS = "scan_options_v4"
   private const val KEY_GENERATION = "generation_v4"
@@ -62,7 +62,7 @@ internal object MediaLibraryCache {
       video.isAudio.toString(),
       video.width.toString(),
       video.height.toString(),
-      video.rotation.toString(),
+      video.rotation?.toString().orEmpty(),
       video.fps.toString(),
       video.hasEmbeddedSubtitles.toString(),
       video.subtitleCodec,
@@ -141,7 +141,7 @@ internal object MediaLibraryCache {
     val isAudio = parts[13].toBooleanStrictOrNull() ?: return null
     val width = parts[14].toIntOrNull() ?: return null
     val height = parts[15].toIntOrNull() ?: return null
-    val rotation = parts[16].toIntOrNull() ?: return null
+    val rotation = if (parts[16].isEmpty()) null else parts[16].toIntOrNull() ?: return null
     val fps = parts[17].toFloatOrNull() ?: return null
     val hasEmbeddedSubtitles = parts[18].toBooleanStrictOrNull() ?: return null
 

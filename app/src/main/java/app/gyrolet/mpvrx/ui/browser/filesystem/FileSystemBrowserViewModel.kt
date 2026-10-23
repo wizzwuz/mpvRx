@@ -96,7 +96,6 @@ class FileSystemBrowserViewModel(
   private val itemChanges = MutableStateFlow<Map<String, ItemChange>>(emptyMap())
   private val changeRevision = AtomicLong()
   private var loadedDirectoryPath: String? = null
-  @Volatile private var directoryGeneration: String? = null
 
   // Sorted and filtered items ready for display
   // Similar to Fossify's final sorted items list
@@ -150,7 +149,7 @@ class FileSystemBrowserViewModel(
 
   fun startWatching() {
     watchActive = true
-    liveDirectoryWatcher.watch(_currentPath.value, getApplication())
+    liveDirectoryWatcher.watch(_currentPath.value)
   }
 
   fun stopWatching() {
@@ -204,7 +203,7 @@ class FileSystemBrowserViewModel(
 
     viewModelScope.launch {
       _currentPath.collect { path ->
-        if (watchActive) liveDirectoryWatcher.watch(path, getApplication())
+        if (watchActive) liveDirectoryWatcher.watch(path)
       }
     }
 
@@ -216,10 +215,7 @@ class FileSystemBrowserViewModel(
         // Drops the persisted tree snapshot too, so a mutation that did not move MediaStore's
         // generation (an in-app rename, a move, a new .nomedia folder) cannot be served from it.
         MediaStoreGenerationGuard.invalidate(getApplication())
-        val previous = directoryGeneration
-        val indexedChanged = previous != null && !MediaStoreGenerationGuard.isTokenCurrent(getApplication(), previous)
-        // Indexed changes need a fresh query; unindexed/hidden changes still require verification.
-        loadCurrentDirectory(forceFileSystemCheck = !indexedChanged)
+        loadCurrentDirectory(forceFileSystemCheck = true)
       }
     }
 
@@ -644,9 +640,6 @@ class FileSystemBrowserViewModel(
       // Don't reset the flag here - let navigation handle it
 
       try {
-        val observedGeneration = withContext(Dispatchers.IO) {
-          MediaStoreGenerationGuard.currentToken(getApplication())
-        }
         // Special case: Show storage roots at the special marker
         // Similar to Fossify's StoragePickerDialog logic
         if (path == STORAGE_ROOTS_MARKER) {
@@ -656,7 +649,6 @@ class FileSystemBrowserViewModel(
           ensureActive()
           _unsortedItems.value = roots
           loadedDirectoryPath = path
-          directoryGeneration = observedGeneration
           reconcileItemChanges(path, roots, scanRevision)
           _videoFilesWithPlayback.value = emptyMap()
           _newVideoIds.value = emptySet()
@@ -666,7 +658,7 @@ class FileSystemBrowserViewModel(
           // Update breadcrumbs for real paths
           // Similar to Fossify's Breadcrumbs.setBreadcrumb()
           _breadcrumbs.value = if (ZipArchiveMedia.isBrowserPath(path)) {
-            ZipArchiveMedia.breadcrumbs(getApplication(), path)
+            withContext(Dispatchers.IO) { ZipArchiveMedia.breadcrumbs(getApplication(), path) }
           } else {
             MediaFileRepository.getPathComponents(path)
           }
@@ -677,7 +669,8 @@ class FileSystemBrowserViewModel(
           // Always show only videos (showAllFileTypes = false)
           val scanResult =
             if (ZipArchiveMedia.isBrowserPath(path)) {
-              ZipArchiveMedia.scan(getApplication(), path, includeAudio = false)
+              // ZIP imports accept audio too, so the archive browser must list it as well.
+              withContext(Dispatchers.IO) { ZipArchiveMedia.scan(getApplication(), path, includeAudio = true) }
             } else {
               MediaFileRepository.scanDirectory(
                 getApplication(),
@@ -706,7 +699,6 @@ class FileSystemBrowserViewModel(
 
               _unsortedItems.value = items
               loadedDirectoryPath = path
-              directoryGeneration = observedGeneration
               reconcileItemChanges(path, items, scanRevision)
 
               val folderCount = items.filterIsInstance<FileSystemItem.Folder>().size
@@ -858,5 +850,4 @@ class FileSystemBrowserViewModel(
     }
   }
 }
-
 

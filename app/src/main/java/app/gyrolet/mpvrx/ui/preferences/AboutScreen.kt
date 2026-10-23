@@ -105,8 +105,6 @@ object AboutScreen : Screen {
     val githubRepoUrl = stringResource(R.string.github_repo_url)
     val privacyPolicyUrl = stringResource(R.string.privacy_policy_url)
     val settingsScrollState = rememberScrollState()
-    val settingsHighlight =
-      rememberSettingsSearchHighlight(AboutScreen, settingsScrollState, MaterialTheme.colorScheme.primary)
 
     // Conditionally initialize update feature based on build config
     val updateViewModel: UpdateViewModel? =
@@ -143,7 +141,6 @@ object AboutScreen : Screen {
         modifier =
           Modifier
             .padding(paddingValues)
-            .then(settingsHighlight)
             .verticalScroll(settingsScrollState),
       ) {
         PreferenceCard {
@@ -500,6 +497,7 @@ object AboutScreen : Screen {
                 modifier =
                   Modifier
                     .fillMaxWidth()
+                    .settingsSearchTarget(R.string.ui_auto_check_for_updates)
                     .clickable { updateViewModel.toggleAutoUpdate(!isAutoUpdateEnabled) }
                     .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -537,6 +535,7 @@ object AboutScreen : Screen {
               if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                 Row(
                   modifier = Modifier.fillMaxWidth()
+                    .settingsSearchTarget(R.string.update_auto_install)
                     .clickable { updateViewModel.toggleAutoInstall(!isAutoInstallEnabled) }.padding(16.dp),
                   verticalAlignment = Alignment.CenterVertically,
                   horizontalArrangement = Arrangement.SpaceBetween,
@@ -552,7 +551,7 @@ object AboutScreen : Screen {
               }
 
               Column(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                modifier = Modifier.fillMaxWidth().settingsSearchTarget(R.string.ui_update_channel).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
               ) {
                 Text(
