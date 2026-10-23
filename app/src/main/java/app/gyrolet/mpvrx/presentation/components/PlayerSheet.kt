@@ -96,6 +96,12 @@ import app.gyrolet.mpvrx.ui.player.controls.components.rememberTvInitialFocusReq
 import app.gyrolet.mpvrx.ui.player.controls.components.tvFocusGroup
 import app.gyrolet.mpvrx.ui.player.controls.components.tvInitialFocus
 import androidx.compose.ui.focus.focusProperties
+import app.gyrolet.mpvrx.preferences.AppearancePreferences
+import app.gyrolet.mpvrx.preferences.preference.collectAsState
+import app.gyrolet.mpvrx.ui.liquidglass.LocalKyantPlayerBackdrop
+import app.gyrolet.mpvrx.ui.liquidglass.playerGlassSurface
+import app.gyrolet.mpvrx.ui.liquidglass.LocalPlayerGlassSurfaceActive
+import org.koin.compose.koinInject
 import app.gyrolet.mpvrx.ui.theme.AppMotion
 import app.gyrolet.mpvrx.ui.theme.LocalMotionPolicy
 import app.gyrolet.mpvrx.ui.theme.MotionPolicy
@@ -117,9 +123,14 @@ fun PlayerSheet(
   swipeOffset: Float = 0f,
   title: String? = null,
   actions: @Composable RowScope.() -> Unit = {},
+  useFrostedGlass: Boolean = true,
   content: @Composable () -> Unit,
 ) {
   val scope = rememberCoroutineScope()
+  val preferences = koinInject<AppearancePreferences>()
+  val liquidGlassEnabled by preferences.liquidGlassEnabled.collectAsState()
+  val playerBackdrop = LocalKyantPlayerBackdrop.current
+  val isFrosted = useFrostedGlass && liquidGlassEnabled
   // TV/remote: request focus INTO the sheet content when it opens, so the D-pad can navigate/select
   // its rows instead of being trapped behind the (hidden) first-layer player controls. Ported from
   // mpvEx-TV; rememberTvInitialFocusRequester retries across the entrance animation and is TV-gated.
@@ -204,6 +215,15 @@ fun PlayerSheet(
         },
     contentAlignment = Alignment.CenterEnd,
   ) {
+    val sheetShape = MaterialTheme.shapes.extraLarge
+    val baseContainerColor = surfaceColor ?: MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.94f)
+    val glassModifier = Modifier.playerGlassSurface(
+      backdrop = playerBackdrop.takeIf { isFrosted },
+      shape = sheetShape,
+      containerColor = baseContainerColor,
+      enabled = isFrosted,
+    )
+
     Surface(
       modifier =
         Modifier
@@ -215,7 +235,8 @@ fun PlayerSheet(
             interactionSource = remember { MutableInteractionSource() },
             indication = null,
             onClick = {},
-          ).then(modifier)
+          ).then(glassModifier)
+          .then(modifier)
           .tvFocusGroup()
           .tvInitialFocus(sheetInitialFocus)
           .offset {
@@ -233,8 +254,8 @@ fun PlayerSheet(
             WindowInsets.systemBars
               .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Vertical),
           ),
-      shape = MaterialTheme.shapes.extraLarge,
-      color = surfaceColor ?: MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.94f),
+      shape = sheetShape,
+      color = if (isFrosted) Color.Transparent else baseContainerColor,
       tonalElevation = if (tonalElevation > 0.dp) tonalElevation else 2.dp,
       content = {
         BackHandler(
