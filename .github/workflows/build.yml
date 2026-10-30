@@ -112,6 +112,17 @@ jobs:
           test -f "$bundle"
 
           if [[ -z "$SIGNING_KEYSTORE" ]]; then
+            if [[ -f "app/release.keystore" ]]; then
+              echo "Using repository release.keystore to sign CI bundle."
+              jarsigner \
+                -keystore app/release.keystore \
+                -storepass "android" \
+                -keypass "android" \
+                "$bundle" \
+                "androiddebugkey"
+              jarsigner -verify "$bundle"
+              exit 0
+            fi
             echo "SIGNING_KEYSTORE is unavailable (expected for untrusted fork PRs); keeping the CI bundle unsigned."
             exit 0
           fi
@@ -147,8 +158,52 @@ jobs:
 
           test -x "$apksigner"
 
+          out_dir="app/build/outputs/apk/${APK_DIR}/release"
+          test -d "$out_dir"
+
           if [[ -z "$SIGNING_KEYSTORE" ]]; then
-            echo "SIGNING_KEYSTORE is unavailable (expected for untrusted fork PRs); keeping CI APKs unsigned."
+            echo "SIGNING_KEYSTORE is unavailable; verifying/signing CI APKs with release/debug keystore."
+            if [[ -f "app/release.keystore" ]]; then
+              cp app/release.keystore signing.keystore
+            else
+              keytool -genkeypair -v -keystore signing.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" 2>/dev/null || true
+            fi
+            zipalign="$ANDROID_HOME/build-tools/34.0.0/zipalign"
+            for abi in $APK_ABIS; do
+              signed="$out_dir/app-${APK_DIR}-${abi}-release.apk"
+              unsigned="$out_dir/app-${APK_DIR}-${abi}-release-unsigned.apk"
+              apk_to_sign=""
+              if [[ -f "$unsigned" ]]; then
+                apk_to_sign="$unsigned"
+              elif [[ -f "$signed" ]]; then
+                apk_to_sign="$signed"
+              fi
+              if [[ -n "$apk_to_sign" ]]; then
+                staged="$out_dir/app-${APK_DIR}-${abi}-staged.apk"
+                rm -f "$staged"
+                zip -d "$apk_to_sign" 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/MANIFEST.MF' 2>/dev/null || true
+                if [[ -x "$zipalign" ]]; then
+                  aligned="$out_dir/app-${APK_DIR}-${abi}-aligned.apk"
+                  rm -f "$aligned"
+                  "$zipalign" -p -f 4 "$apk_to_sign" "$aligned"
+                  mv -f "$aligned" "$apk_to_sign"
+                fi
+                "$apksigner" sign \
+                  --ks signing.keystore \
+                  --ks-pass "pass:android" \
+                  --key-pass "pass:android" \
+                  --v1-signing-enabled true \
+                  --v2-signing-enabled true \
+                  --v3-signing-enabled true \
+                  --out "$staged" \
+                  "$apk_to_sign"
+                rm -f "$unsigned"
+                mv -f "$staged" "$signed"
+              fi
+              if [[ -f "$signed" ]]; then
+                "$apksigner" verify --verbose "$signed"
+              fi
+            done
             exit 0
           fi
 
