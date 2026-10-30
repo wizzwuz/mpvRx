@@ -144,6 +144,17 @@ fun GestureHandler(
   val secondarySubPinchZoomEnabled by subtitlesPreferences.secondarySubPinchZoom.collectAsState()
   val swipeSubtitlesToSeekDialog by gesturePreferences.swipeSubtitlesToSeekDialog.collectAsState()
   val isSwipeSubtitlesInverted by gesturePreferences.swipeSubtitlesInvertDirection.collectAsState()
+  // Isolated double-tap and single-tap state tracking
+  var tapCount by remember { mutableStateOf(0) }
+  var lastTapTime by remember { mutableStateOf(0L) }
+  var lastTapPosition by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+  var lastTapRegion by remember { mutableStateOf<String?>(null) }
+  var pendingSingleTapRegion by remember { mutableStateOf<String?>(null) }
+  var pendingSingleTapPosition by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
+  var pendingTapInExclusionZone by remember { mutableStateOf(false) }
+  var singleTapJob by remember { mutableStateOf<Job?>(null) }
+  val doubleTapTimeout = 330L
+  val multiTapContinueWindow = 750L
   var isDoubleTapSeeking by remember { mutableStateOf(false) }
   var lastSeekRegion by remember { mutableStateOf<String?>(null) }
   var lastSeekTime by remember { mutableStateOf<Long?>(null) }
@@ -261,18 +272,6 @@ fun GestureHandler(
       lastTwoFingerTapSide = null
     }
   }
-
-  // Isolated double-tap and single-tap state tracking
-  var tapCount by remember { mutableStateOf(0) }
-  var lastTapTime by remember { mutableStateOf(0L) }
-  var lastTapPosition by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
-  var lastTapRegion by remember { mutableStateOf<String?>(null) }
-  var pendingSingleTapRegion by remember { mutableStateOf<String?>(null) }
-  var pendingSingleTapPosition by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
-  var pendingTapInExclusionZone by remember { mutableStateOf(false) }
-  var singleTapJob by remember { mutableStateOf<Job?>(null) }
-  val doubleTapTimeout = 330L
-  val multiTapContinueWindow = 750L
 
   fun executeSingleTapAction(
     region: String,
