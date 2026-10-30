@@ -52,6 +52,7 @@ import app.gyrolet.mpvrx.ui.player.findSubtitleGestureTarget
 import app.gyrolet.mpvrx.ui.player.draggedSubtitlePosition
 import app.gyrolet.mpvrx.ui.player.getTrackSelectionId
 import app.gyrolet.mpvrx.ui.player.isSecondarySubtitleActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -147,14 +148,25 @@ fun GestureHandler(
   var lastSeekRegion by remember { mutableStateOf<String?>(null) }
   var lastSeekTime by remember { mutableStateOf<Long?>(null) }
   LaunchedEffect(seekAmount) {
-    delay(800)
-    isDoubleTapSeeking = false
-    lastSeekRegion = null
-    lastSeekTime = null
-    viewModel.updateSeekAmount(0)
-    viewModel.updateSeekText(null)
-    delay(100)
-    viewModel.hideSeekBar()
+    if (seekAmount != 0) {
+      delay(800)
+      isDoubleTapSeeking = false
+      lastSeekRegion = null
+      lastSeekTime = null
+      tapCount = 0
+      lastTapRegion = null
+      viewModel.updateSeekAmount(0)
+      viewModel.updateSeekText(null)
+      delay(100)
+      viewModel.hideSeekBar()
+    } else {
+      isDoubleTapSeeking = false
+      lastSeekRegion = null
+      lastSeekTime = null
+      tapCount = 0
+      lastTapRegion = null
+      viewModel.hideSeekBar()
+    }
   }
   val multipleSpeedGesture by playerPreferences.holdForMultipleSpeed.collectAsState()
   val brightnessGesture by playerPreferences.brightnessGesture.collectAsState()
@@ -250,7 +262,7 @@ fun GestureHandler(
     }
   }
 
-  // Isolated double-tap state tracking
+  // Isolated double-tap and single-tap state tracking
   var tapCount by remember { mutableStateOf(0) }
   var lastTapTime by remember { mutableStateOf(0L) }
   var lastTapPosition by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
@@ -258,74 +270,47 @@ fun GestureHandler(
   var pendingSingleTapRegion by remember { mutableStateOf<String?>(null) }
   var pendingSingleTapPosition by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
   var pendingTapInExclusionZone by remember { mutableStateOf(false) }
-  val doubleTapTimeout = 250L
-  val multiTapContinueWindow = 650L
+  var singleTapJob by remember { mutableStateOf<Job?>(null) }
+  val doubleTapTimeout = 330L
+  val multiTapContinueWindow = 750L
 
-  // Auto-reset tap count on timeout and execute single tap if no double tap detected
-  LaunchedEffect(tapCount, longPressTriggeredDuringTouch) {
-    if (tapCount == 1) {
-      delay(doubleTapTimeout)
-      // Timeout occurred, execute single tap action only if not double-tap seeking and not triggered by long press
-      if (tapCount == 1 && pendingSingleTapRegion != null && !isDoubleTapSeeking && !longPressTriggeredDuringTouch) {
-        val region = pendingSingleTapRegion!!
-        var handled = false
-        if (areControlsLocked) {
-          viewModel.showControls()
-          handled = true
-        } else if (controlsShown) {
-          handled = false
-        } else if (!pendingTapInExclusionZone) {
-          if (useSingleTapForCenter && region == "center") {
-            viewModel.handleCenterSingleTap()
-            handled = true
-          } else if (useSingleTapForLeftRight && (region == "left" || region == "right")) {
-            val effectiveRegion = if (reverseDoubleTap) {
-              if (region == "left") "right" else "left"
-            } else region
-            if (effectiveRegion == "left") {
-              viewModel.handleLeftSingleTap()
-            } else {
-              viewModel.handleRightSingleTap()
-            }
-            handled = true
-          }
-        }
-
-        if (!handled) {
-          if (controlsShown) {
-            viewModel.hideControls()
-          } else {
-            viewModel.showControls()
-          }
-        }
-        pendingSingleTapRegion = null
-        pendingSingleTapPosition = null
-        pendingTapInExclusionZone = false
-      }
-      tapCount = 0
-      lastTapRegion = null
-      if (!isDoubleTapSeeking) {
-        viewModel.updateSeekAmount(0)
-      }
-    } else if (tapCount >= 2) {
-      delay(multiTapContinueWindow)
-      if (!isDoubleTapSeeking) {
-        tapCount = 0
-        lastTapRegion = null
-      }
+  fun executeSingleTapAction(
+    region: String,
+    inExclusionZone: Boolean,
+  ) {
+    if (anyPanelShown && !allowGesturesInPanels) {
+      if (panelShown != Panels.None) viewModel.panelShown.update { Panels.None }
+      if (externalPanelShown) onDismissExternalPanel()
+      return
     }
-  }
-
-  // Reset double-tap seek state when seeking stops
-  LaunchedEffect(seekAmount) {
-    if (seekAmount == 0) {
-      delay(100)
-      isDoubleTapSeeking = false
-      tapCount = 0
-      lastTapRegion = null
-      lastSeekRegion = null
-      lastSeekTime = null
+    if (areControlsLocked) {
+      viewModel.showControls()
+      return
     }
+    if (controlsShown) {
+      viewModel.hideControls()
+      return
+    }
+    if (inExclusionZone) {
+      viewModel.showControls()
+      return
+    }
+    if (useSingleTapForCenter && region == "center") {
+      viewModel.handleCenterSingleTap()
+      return
+    }
+    if (useSingleTapForLeftRight && (region == "left" || region == "right")) {
+      val effectiveRegion = if (reverseDoubleTap) {
+        if (region == "left") "right" else "left"
+      } else region
+      if (effectiveRegion == "left") {
+        viewModel.handleLeftSingleTap()
+      } else {
+        viewModel.handleRightSingleTap()
+      }
+      return
+    }
+    viewModel.showControls()
   }
 
   Box(
@@ -471,6 +456,13 @@ fun GestureHandler(
               y = (downPosition.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f),
             )
 
+            // Cancel any pending single tap immediately on touch-down
+            singleTapJob?.cancel()
+            singleTapJob = null
+            pendingSingleTapRegion = null
+            pendingSingleTapPosition = null
+            pendingTapInExclusionZone = false
+
             // Track for potential drag
             var isDrag = false
             var isMultiTouch = false
@@ -481,10 +473,18 @@ fun GestureHandler(
               val event = awaitPointerEvent()
               if (event.changes.count { it.pressed } >= 2) {
                 isMultiTouch = true
+                singleTapJob?.cancel()
+                singleTapJob = null
+                pendingSingleTapRegion = null
+                tapCount = 0
               }
               val pointer = event.changes.firstOrNull { it.id == down.id }
               if (pointer == null) {
                 if (isMultiTouch || event.changes.any { it.pressed }) {
+                  singleTapJob?.cancel()
+                  singleTapJob = null
+                  pendingSingleTapRegion = null
+                  tapCount = 0
                   while (event.changes.any { it.pressed }) {
                     val nextEvent = awaitPointerEvent()
                     if (!nextEvent.changes.any { it.pressed }) break
@@ -503,6 +503,8 @@ fun GestureHandler(
 
               if (distance > 10f) {
                 isDrag = true
+                singleTapJob?.cancel()
+                singleTapJob = null
                 pendingSingleTapRegion = null
                 pendingSingleTapPosition = null
                 pendingTapInExclusionZone = false
@@ -511,6 +513,10 @@ fun GestureHandler(
 
               if (!pointer.pressed) {
                 if (isMultiTouch || event.changes.any { it.pressed }) {
+                  singleTapJob?.cancel()
+                  singleTapJob = null
+                  pendingSingleTapRegion = null
+                  tapCount = 0
                   while (event.changes.any { it.pressed }) {
                     val nextEvent = awaitPointerEvent()
                     if (!nextEvent.changes.any { it.pressed }) break
@@ -535,10 +541,9 @@ fun GestureHandler(
                   // Check if this is a continuation of multi-tap sequence
                   val isMultiTapContinuation =
                     lastTapRegion == region &&
-                      timeSinceLastTap < multiTapContinueWindow &&
+                      (timeSinceLastTap < multiTapContinueWindow || isDoubleTapSeeking) &&
                       positionChange < 100f &&
-                      tapCount >= 2 &&
-                      isDoubleTapSeeking
+                      (tapCount >= 2 || isDoubleTapSeeking)
 
                   // Check if this is a valid double-tap
                   val isDoubleTap =
@@ -552,7 +557,9 @@ fun GestureHandler(
                     tapCount = 2
                     lastTapTime = downTime
                     lastTapPosition = downPosition
-                    pendingSingleTapRegion = null // Cancel pending single tap
+                    singleTapJob?.cancel()
+                    singleTapJob = null
+                    pendingSingleTapRegion = null
                     pendingSingleTapPosition = null
                     pendingTapInExclusionZone = false
                     wasConsumedByTapGesture = true
@@ -597,7 +604,7 @@ fun GestureHandler(
                         viewModel.handleCenterDoubleTap()
                       }
                     }
-                  } else if (isMultiTapContinuation && isDoubleTapSeeking) {
+                  } else if (isMultiTapContinuation && (isDoubleTapSeeking || seekAmount != 0)) {
                     // Continue multi-tap seeking
                     tapCount++
                     wasConsumedByTapGesture = true
@@ -605,6 +612,8 @@ fun GestureHandler(
                     lastSeekTime = System.currentTimeMillis()
                     lastTapTime = downTime
                     lastTapPosition = downPosition
+                    singleTapJob?.cancel()
+                    singleTapJob = null
                     pendingSingleTapRegion = null
                     pendingSingleTapPosition = null
                     pendingTapInExclusionZone = false
@@ -644,8 +653,8 @@ fun GestureHandler(
                         viewModel.handleCenterDoubleTap()
                       }
                     }
-                  } else if (tapCount == 0 || timeSinceLastTap >= doubleTapTimeout) {
-                    // Single tap or timed out - start new tap sequence
+                  } else {
+                    // Single tap or first tap of a double tap
                     tapCount = 1
                     lastTapTime = downTime
                     lastTapPosition = downPosition
@@ -677,27 +686,28 @@ fun GestureHandler(
                       !longPressTriggeredDuringTouch &&
                       !controlsShown
                     ) {
-                      if (!inExclusionZone) {
-                        if (areControlsLocked) {
-                          viewModel.showControls()
-                        } else {
-                          val effectiveRegion = if (reverseDoubleTap) {
-                            when (region) {
-                              "left" -> "right"
-                              "right" -> "left"
-                              else -> region
-                            }
-                          } else region
-
-                          when (effectiveRegion) {
-                            "center" -> viewModel.handleCenterSingleTap()
-                            "left" -> viewModel.handleLeftSingleTap()
-                            "right" -> viewModel.handleRightSingleTap()
-                          }
+                      executeSingleTapAction(region, inExclusionZone)
+                      tapCount = 0
+                      lastTapRegion = null
+                      pendingSingleTapRegion = null
+                      pendingSingleTapPosition = null
+                      pendingTapInExclusionZone = false
+                    } else if (!isDoubleTapSeeking && seekAmount == 0) {
+                      // Delayed single tap to allow potential double-tap
+                      singleTapJob?.cancel()
+                      val targetRegion = region
+                      val targetExclusion = inExclusionZone
+                      singleTapJob = coroutineScope.launch {
+                        delay(doubleTapTimeout)
+                        if (tapCount == 1 && !isDoubleTapSeeking && seekAmount == 0 && !longPressTriggeredDuringTouch) {
+                          executeSingleTapAction(targetRegion, targetExclusion)
                         }
+                        tapCount = 0
+                        lastTapRegion = null
                         pendingSingleTapRegion = null
                         pendingSingleTapPosition = null
                         pendingTapInExclusionZone = false
+                        singleTapJob = null
                       }
                     }
                   }
