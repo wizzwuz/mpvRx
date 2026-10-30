@@ -356,6 +356,8 @@ class MediaPlaybackService :
   private var playbackObserversStarted = false
   private var handledEofGeneration: Long? = null
   @Volatile
+  private var lastForegroundNotification: Notification? = null
+  @Volatile
   private var foregroundReady = false
     set(value) {
       field = value
@@ -364,7 +366,9 @@ class MediaPlaybackService :
     }
   private val audioFocusChangeListener =
     AudioManager.OnAudioFocusChangeListener { change ->
-      if (mpvAccessReleased || handingBackToActivity) return@OnAudioFocusChangeListener
+      if (mpvAccessReleased || handingBackToActivity || audioPreferences.ignoreAudioFocus.get()) {
+        return@OnAudioFocusChangeListener
+      }
       when (change) {
         AudioManager.AUDIOFOCUS_LOSS -> {
           resumeAfterFocusGain = false
@@ -400,8 +404,9 @@ class MediaPlaybackService :
         context: Context?,
         intent: Intent?,
       ) {
-        if (!mpvAccessReleased && !handingBackToActivity &&
-          intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY && ownsAudioFocus
+        // Headphone disconnection still pauses detached playback when focus handling is disabled.
+        if (canHandleDetachedTransport() &&
+          intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY
         ) {
           PlaybackSession.setPropertyBoolean("pause", true)
         }
@@ -465,6 +470,12 @@ class MediaPlaybackService :
 
     // Ensure notification channel exists before starting foreground service
     createNotificationChannel(this)
+
+    // A bind can arrive before onStartCommand. Promote before session setup or any
+    // playback work so that cold starts also meet Android's foreground deadline.
+    if (!startForegroundNotification(useStartupNotification = true)) {
+      stopSelf()
+    }
   }
 
   private fun startPlaybackObservers() {
@@ -482,6 +493,19 @@ class MediaPlaybackService :
     serviceScope.launch {
       // Includes pause, EOF, error, stop and native shutdown; no periodic wake-up timer.
       PlaybackSession.state.collect { updatePlaybackWakeLock() }
+    }
+
+    serviceScope.launch {
+      audioPreferences.ignoreAudioFocus.changes().distinctUntilChanged().collect { ignore ->
+        if (mpvAccessReleased) return@collect
+        if (ignore) {
+          abandonAudioOwnership()
+        } else if (canHandleDetachedTransport() &&
+          PlaybackSession.getPropertyBoolean("pause") == false && !takeAudioOwnership()
+        ) {
+          PlaybackSession.setPropertyBoolean("pause", true)
+        }
+      }
     }
 
     serviceScope.launch {
@@ -569,10 +593,11 @@ class MediaPlaybackService :
   ): Int {
     Log.d(TAG, "Service starting with startId: $startId")
 
-    // MediaButtonReceiver launches us with startForegroundService(). Android 16 enforces the
-    // promotion deadline even when there is no live playback session and this start will be
-    // stopped immediately, so no validation or action branch may run before this call.
-    if (!foregroundReady && !startForegroundNotification(useStartupNotification = true)) {
+    // Acknowledge EVERY startForegroundService request, including repeated starts and stop
+    // actions. foregroundReady describes playback ownership, not the system's pending start.
+    // Reuse the last notification without querying MPV or rebuilding artwork on this path.
+    if (!startForegroundNotification(useStartupNotification = true)) {
+      stopForegroundNotification()
       stopSelf(startId)
       return START_NOT_STICKY
     }
@@ -718,8 +743,14 @@ class MediaPlaybackService :
         } else {
           0
         }
-      val notification = if (useStartupNotification) buildStartupNotification() else buildNotification()
+      val notification =
+        if (useStartupNotification) {
+          lastForegroundNotification ?: buildStartupNotification()
+        } else {
+          buildNotification()
+        }
       ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
+      lastForegroundNotification = notification
       true
     } catch (error: Exception) {
       Log.e(TAG, "Error starting foreground service", error)
@@ -783,6 +814,8 @@ class MediaPlaybackService :
     lastThumbnailSource = source?.let(::WeakReference)
     thumbnail = ownedCopy
     if (lastPaletteThumbnail === previous) lastPaletteThumbnail = null
+    // Cached notifications can reference this bitmap; never repost recycled artwork.
+    lastForegroundNotification = null
     previous?.takeIf { it !== ownedCopy && !it.isRecycled }?.recycle()
     return previous !== ownedCopy
   }
@@ -793,6 +826,10 @@ class MediaPlaybackService :
   }
 
   fun takeAudioOwnership(): Boolean {
+    if (audioPreferences.ignoreAudioFocus.get()) {
+      abandonAudioOwnership()
+      return true
+    }
     // During a foreground handoff, returning true means "ownership is intentionally not needed".
     // Do not request focus and bounce it back to PlayerActivity; that focus ping-pong is exactly
     // what can turn a notification tap into an unexpected pause.
@@ -1399,7 +1436,9 @@ class MediaPlaybackService :
 
     try {
       val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-      notificationManager.notify(NOTIFICATION_ID, buildNotification())
+      val notification = buildNotification()
+      notificationManager.notify(NOTIFICATION_ID, notification)
+      lastForegroundNotification = notification
       lastNotificationUpdateTime = SystemClock.elapsedRealtime()
       lastPublishedPositionSeconds = currentPositionSeconds
     } catch (e: Exception) {
@@ -1759,6 +1798,7 @@ class MediaPlaybackService :
   }
 
   private fun stopForegroundNotification() {
+    lastForegroundNotification = null
     foregroundReady = false
     if (::mediaSession.isInitialized) mediaSession.isActive = false
     runCatching {
@@ -2120,6 +2160,7 @@ class MediaPlaybackService :
 
       updateExternalDisplayWakeLock(false)
       releaseMpvAccessBeforeShutdown()
+      lastForegroundNotification = null
       foregroundReady = false
       abandonAudioOwnership()
       if (noisyReceiverRegistered) {
@@ -2182,3 +2223,4 @@ class MediaPlaybackService :
     super.onTaskRemoved(rootIntent)
   }
 }
+

@@ -25,7 +25,9 @@ class GesturePreferences(
   val leftSingleActionGesture = preferenceStore.getEnum("left_double_tap_gesture", SingleActionGesture.Seek)
   val centerSingleActionGesture = preferenceStore.getEnum("center_drag_gesture", SingleActionGesture.PlayPause)
   val rightSingleActionGesture = preferenceStore.getEnum("right_drag_gesture", SingleActionGesture.Seek)
+  val useSingleTapForLeft = preferenceStore.getBoolean("use_single_tap_for_left", false)
   val useSingleTapForCenter = preferenceStore.getBoolean("use_single_tap_for_center", false)
+  val useSingleTapForRight = preferenceStore.getBoolean("use_single_tap_for_right", false)
   val leftSingleTapGesture = preferenceStore.getEnum("left_single_tap_gesture", SingleActionGesture.PlayPause)
   val rightSingleTapGesture = preferenceStore.getEnum("right_single_tap_gesture", SingleActionGesture.PlayPause)
   val useSingleTapForLeftRight = preferenceStore.getBoolean("use_single_tap_for_left_right", true)
@@ -47,6 +49,8 @@ class GesturePreferences(
     preferenceStore.getBoolean("swipe_subtitles_to_seek_dialog", true)
   val swipeSubtitlesInvertDirection =
     preferenceStore.getBoolean("swipe_subtitles_invert_direction", false)
+  val twoFingerSpeedSwipe =
+    preferenceStore.getBoolean("two_finger_speed_swipe", true)
 
   init {
     val legacyMediaPreviousGesture =

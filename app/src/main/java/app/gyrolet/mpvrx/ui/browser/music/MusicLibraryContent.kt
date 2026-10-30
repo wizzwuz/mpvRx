@@ -59,7 +59,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
+import app.gyrolet.mpvrx.presentation.components.AppTextField as OutlinedTextField
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Scaffold
@@ -165,6 +165,7 @@ import app.gyrolet.mpvrx.ui.player.controls.components.tvFocusHighlight
 import app.gyrolet.mpvrx.ui.utils.LocalBackStack
 import app.gyrolet.mpvrx.ui.utils.navigateTo
 import app.gyrolet.mpvrx.ui.utils.rememberTabNavigation
+import app.gyrolet.mpvrx.ui.tv.focusableWhen
 import app.gyrolet.mpvrx.utils.media.MediaUtils
 import app.gyrolet.mpvrx.utils.permission.PermissionUtils
 import kotlinx.coroutines.Dispatchers
@@ -638,7 +639,7 @@ fun MusicLibraryContent(
                 Modifier.animateFloatingActionButton(
                   visible = isFabShouldBeVisible,
                   alignment = Alignment.BottomEnd,
-                ),
+                ).focusableWhen(isFabShouldBeVisible),
               checked = false,
               onCheckedChange = { showCreatePlaylistDialog = true },
             ) {
@@ -667,7 +668,7 @@ fun MusicLibraryContent(
                   Modifier.animateFloatingActionButton(
                     visible = isFabShouldBeVisible,
                     alignment = Alignment.BottomEnd,
-                  ),
+                  ).focusableWhen(isFabShouldBeVisible),
                 checked = isFabExpanded.value && !quickPlayFabDirect,
                 onCheckedChange = {
                   if (quickPlayFabDirect) {
@@ -1368,6 +1369,7 @@ private fun ArtistAvatarImage(
   ) {
     if (!url.isNullOrBlank()) {
       RemoteImage(
+        maxDimensionPx = with(androidx.compose.ui.platform.LocalDensity.current) { maxWidth.roundToPx() * 2 },
         url = url,
         contentDescription = artistName,
         contentScale = ContentScale.Crop,

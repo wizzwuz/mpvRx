@@ -28,7 +28,6 @@ import app.gyrolet.mpvrx.utils.media.MetadataRetrieval
 import app.gyrolet.mpvrx.utils.media.PlaybackStateEvents
 import app.gyrolet.mpvrx.utils.permission.PermissionUtils.StorageOps
 import app.gyrolet.mpvrx.utils.media.ScopedHiddenFolderScanner
-import app.gyrolet.mpvrx.utils.storage.FolderViewScanner
 import app.gyrolet.mpvrx.utils.storage.MediaStoreGenerationGuard
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -193,9 +192,15 @@ class FolderListViewModel(
     }
 
     viewModelScope.launch {
-      combine(_allVideoFolders, blacklistFlow, pendingFolderDeletionKeys) { folders, blacklist, pendingDeletions ->
+      combine(
+        _allVideoFolders,
+        blacklistFlow,
+        foldersPreferences.whitelistChanges(),
+        pendingFolderDeletionKeys,
+      ) { folders, blacklist, (whitelistEnabled, whitelist), pendingDeletions ->
         folders.filter { folder ->
           folderKey(folder) !in pendingDeletions &&
+            app.gyrolet.mpvrx.utils.storage.isWhitelistedMediaPath(folder.path, whitelistEnabled, whitelist) &&
             blacklist.none { blacklisted ->
               app.gyrolet.mpvrx.utils.storage.isMediaPathInFolder(folder.path, blacklisted)
             }
@@ -321,7 +326,8 @@ class FolderListViewModel(
       "_m${foldersPreferences.sharedScanMarkedFolders.get()}_d${foldersPreferences.sharedScanDotFolders.get()}" +
       "_markers${foldersPreferences.hiddenFolderMarkerNames.get().sorted().joinToString(",")}" +
       "_ignore${foldersPreferences.sharedIgnoredMarkers.get().sorted().joinToString(",")}" +
-      "_audio_${browserPreferences.includeAudioBrowser.get()}_${browserPreferences.minimumAudioDurationSeconds.get()}"
+      "_audio_${browserPreferences.includeAudioBrowser.get()}_${browserPreferences.minimumAudioDurationSeconds.get()}" +
+      "_${MediaFileRepository.currentScanOptions().mediaFilterKey}"
 
   private fun serializeFoldersToJson(folders: List<VideoFolder>): String {
     // Simple JSON serialization

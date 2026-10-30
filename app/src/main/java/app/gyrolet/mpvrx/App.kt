@@ -13,6 +13,7 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
 import android.content.ComponentName
+import android.content.ComponentCallbacks2
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
@@ -35,7 +36,10 @@ import app.gyrolet.mpvrx.preferences.AppearancePreferences
 import app.gyrolet.mpvrx.preferences.DecoderPreferences
 import app.gyrolet.mpvrx.preferences.PlayerPreferences
 import app.gyrolet.mpvrx.preferences.SettingsRestoreGuard
-import android.widget.Toast
+import app.gyrolet.mpvrx.utils.telemetry.MeasureTelemetry
+import app.gyrolet.mpvrx.remote.TvInputDispatcher
+import app.gyrolet.mpvrx.remote.TvRemoteServer
+import app.gyrolet.mpvrx.ui.components.AppToast as Toast
 import app.gyrolet.mpvrx.presentation.crash.CrashMonitor
 import app.gyrolet.mpvrx.domain.network.NetworkImageRepository
 import app.gyrolet.mpvrx.repository.NetworkRepository
@@ -46,6 +50,7 @@ import app.gyrolet.mpvrx.ui.player.PlaybackSession
 import app.gyrolet.mpvrx.ui.player.PlayerActivity
 import app.gyrolet.mpvrx.ui.theme.AppTheme
 import app.gyrolet.mpvrx.ui.theme.DarkMode
+import app.gyrolet.mpvrx.utils.memory.BitmapMemoryCaches
 import `is`.xyz.mpv.FastThumbnails
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -159,6 +164,8 @@ class App :
         app.gyrolet.mpvrx.di.DownloadModule,
       )
     }
+    // Third-party diagnostics require consent; disabled users do not start collection.
+    MeasureTelemetry.initialize(this, getKoin().get<AdvancedPreferences>().measureEnabled.get())
     if (!BuildConfig.MPV_SUPPORTS_VULKAN) {
       getKoin().get<DecoderPreferences>().useVulkan.set(false)
     }
@@ -193,17 +200,20 @@ class App :
           } else {
             PackageManager.COMPONENT_ENABLED_STATE_DISABLED
           }
-        packageManager.setComponentEnabledSetting(
-          componentName,
-          newState,
-          PackageManager.DONT_KILL_APP,
-        )
+        if (packageManager.getComponentEnabledSetting(componentName) != newState) {
+          packageManager.setComponentEnabledSetting(
+            componentName,
+            newState,
+            PackageManager.DONT_KILL_APP,
+          )
+        }
       }.onFailure { error ->
         Log.e(TAG, "Failed to initialize MediaInfoActivityAlias setting on launch", error)
       }
       runCatching {
         val preferences: PlayerPreferences = getKoin().get()
         val enableWebLinks = preferences.enableWebStreamLinkIntents.get()
+        if (!BuildConfig.ENABLE_YTDLP) return@runCatching
         val componentName = ComponentName(this@App, "app.gyrolet.mpvrx.ui.player.WebStreamLinksActivityAlias")
         val newState =
           if (enableWebLinks) {
@@ -211,11 +221,13 @@ class App :
           } else {
             PackageManager.COMPONENT_ENABLED_STATE_DISABLED
           }
-        packageManager.setComponentEnabledSetting(
-          componentName,
-          newState,
-          PackageManager.DONT_KILL_APP,
-        )
+        if (packageManager.getComponentEnabledSetting(componentName) != newState) {
+          packageManager.setComponentEnabledSetting(
+            componentName,
+            newState,
+            PackageManager.DONT_KILL_APP,
+          )
+        }
       }.onFailure { error ->
         Log.e(TAG, "Failed to initialize WebStreamLinksActivityAlias setting on launch", error)
       }
@@ -229,6 +241,17 @@ class App :
     // scan of the entire external-storage root from process startup: on large libraries that can
     // wake storage for minutes and duplicate work the platform already performs when media changes.
     // Explicit library refreshes and normal MediaStore notifications still invalidate app caches.
+  }
+
+  override fun onTrimMemory(level: Int) {
+    super.onTrimMemory(level)
+    BitmapMemoryCaches.trimMemory(level)
+  }
+
+  @Suppress("DEPRECATION")
+  override fun onLowMemory() {
+    super.onLowMemory()
+    BitmapMemoryCaches.trimMemory(ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {
@@ -259,8 +282,8 @@ class App :
   }
 
   private fun startWatchStatsTracking() {
-    val repository = getKoin().get<app.gyrolet.mpvrx.repository.WatchStatsRepository>()
     applicationScope.launch {
+      val repository = getKoin().get<app.gyrolet.mpvrx.repository.WatchStatsRepository>()
       var lastSessionKey: Triple<Long, Long, String>? = null
       combine(
         PlaybackSession.state,
@@ -312,6 +335,7 @@ class App :
     if (startedActivityCount++ == 0) {
       mediaStoreLiveMonitor.start()
       getKoin().get<app.gyrolet.mpvrx.domain.syncplay.SyncplayManager>().onAppForegrounded()
+      TvRemoteServer.onAppForeground(this)
       scheduleFastThumbnailWarmupOnce()
       scheduleMetadataMaintenanceOnce()
       scheduleImageCacheCleanupOnce()
@@ -324,6 +348,7 @@ class App :
     if (startedActivityCount == 0 && !activity.isChangingConfigurations) {
       isInForeground = false
       mediaStoreLiveMonitor.stop()
+      TvRemoteServer.onAppBackground(this)
       pauseVideoWhenBackgroundPlaybackDisabled(activity)
       getKoin().get<app.gyrolet.mpvrx.domain.syncplay.SyncplayManager>().onAppBackgrounded()
       scheduleSettingsAutoBackup()
@@ -395,6 +420,7 @@ class App :
   }
 
   override fun onActivityResumed(activity: Activity) {
+    TvInputDispatcher.onActivityResumed(activity)
     // Restored settings count as working once a screen has stayed up with them for a while.
     SettingsRestoreGuard.onScreenShown(activity)
     if (BuildConfig.ENABLE_UPDATE_FEATURE) {
@@ -425,7 +451,10 @@ class App :
     if (activity is PlayerActivity) PlaybackPerformanceTrace.begin("ON_PAUSE")
   }
 
-  override fun onActivityPaused(activity: Activity) = SettingsRestoreGuard.onScreenHidden()
+  override fun onActivityPaused(activity: Activity) {
+    SettingsRestoreGuard.onScreenHidden()
+    TvInputDispatcher.onActivityPaused(activity)
+  }
 
   override fun onActivityPostPaused(activity: Activity) {
     if (activity is PlayerActivity) PlaybackPerformanceTrace.end("ON_PAUSE")
@@ -566,6 +595,7 @@ class App :
         )
         val imageRepository: NetworkImageRepository = getKoin().get()
         imageRepository.evictStaleImageCaches()
+        app.gyrolet.mpvrx.presentation.components.RemoteImageLoader.trimDiskCache(this@App)
         Log.d(TAG, "Network image cache cleanup completed")
       } catch (cancellation: CancellationException) {
         imageCacheCleanupStarted.set(false)

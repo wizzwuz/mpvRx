@@ -32,7 +32,6 @@ import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
@@ -44,7 +43,6 @@ import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -122,6 +120,7 @@ import app.gyrolet.mpvrx.domain.media.model.Video
 import app.gyrolet.mpvrx.ui.browser.dialogs.AddToPlaylistDialog
 import app.gyrolet.mpvrx.ui.browser.dialogs.toPlaylistCandidates
 import app.gyrolet.mpvrx.ui.liquidglass.LocalKyantPlayerBackdrop
+import app.gyrolet.mpvrx.ui.liquidglass.outsideShadow
 import com.kyant.backdrop.Backdrop
 import app.gyrolet.mpvrx.ui.player.resolveUri
 import app.gyrolet.mpvrx.ui.player.controls.components.MiniAudioVisualizer
@@ -178,6 +177,7 @@ import kotlin.math.abs
 import kotlinx.coroutines.flow.collect
 import kotlin.math.roundToInt
 import app.gyrolet.mpvrx.R
+import app.gyrolet.mpvrx.utils.media.HttpUtils
 import app.gyrolet.mpvrx.preferences.BrowserPreferences
 import app.gyrolet.mpvrx.domain.thumbnail.EmbeddedArtworkResolver
 import app.gyrolet.mpvrx.domain.thumbnail.getArtwork
@@ -221,7 +221,6 @@ import app.gyrolet.mpvrx.ui.player.visualizer.rememberAudioVisualizerFeatures
 import app.gyrolet.mpvrx.ui.theme.fontFamilyForText
 import app.gyrolet.mpvrx.ui.utils.isMpvOptionOwnedByConfig
 import app.gyrolet.mpvrx.ui.utils.rememberAppHaptics
-import app.gyrolet.mpvrx.utils.media.fileExtension
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Dispatchers
@@ -467,9 +466,9 @@ private fun Modifier.audioPlaybackGestures(viewModel: PlayerViewModel, onTap: ()
         onLongPress = { hold() },
         onDoubleTap = { position ->
           when {
-            position.x < size.width / 3f -> viewModel.handleLeftDoubleTap()
-            position.x > size.width * 2f / 3f -> viewModel.handleRightDoubleTap()
-            else -> viewModel.handleCenterDoubleTap()
+            position.x < size.width / 3f -> viewModel.handleLeftTap()
+            position.x > size.width * 2f / 3f -> viewModel.handleRightTap()
+            else -> viewModel.handleCenterTap()
           }
         },
       )
@@ -558,12 +557,13 @@ private fun AudioVisualizerViewport(
 @Composable
 private fun AudioSpectrumCaptureEffect(
   enabled: Boolean,
+  requestPermission: Boolean,
   features: AudioFeatures,
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val analyzerActive = remember(features) { AtomicBoolean(false) }
-  var hasRecordPermission by remember {
+  var hasRecordPermission by remember(context) {
     mutableStateOf(
       ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED,
@@ -574,8 +574,15 @@ private fun AudioSpectrumCaptureEffect(
       hasRecordPermission = granted
     }
 
-  LaunchedEffect(enabled, hasRecordPermission) {
-    if (enabled && !hasRecordPermission) {
+  androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+    hasRecordPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+      PackageManager.PERMISSION_GRANTED
+  }
+
+  LaunchedEffect(requestPermission) {
+    hasRecordPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+      PackageManager.PERMISSION_GRANTED
+    if (requestPermission && !hasRecordPermission) {
       recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
   }
@@ -814,15 +821,22 @@ fun AudioPlayerControls(
     return titleWithoutExt
   }
 
-  var lastValidTitle by remember {
+  val isYouTubeSource = HttpUtils.isYouTubeUrl(currentItem?.originalUri)
+  val itemTitle = currentItem?.title?.takeIf {
+    it.isNotBlank() && (!isYouTubeSource || !HttpUtils.isLikelyJunkTitle(it))
+  }
+  val controlsTitle = mediaTitle?.takeIf {
+    it.isNotBlank() && (!isYouTubeSource || !HttpUtils.isLikelyJunkTitle(it))
+  }
+  var lastValidTitle by remember(currentItem?.stableId) {
     mutableStateOf(
-      currentItem?.title?.takeIf { it.isNotBlank() }?.stripAudioExtension()
-        ?: mediaTitle?.takeIf { it.isNotBlank() }?.stripAudioExtension()
+      itemTitle?.stripAudioExtension()
+        ?: controlsTitle?.stripAudioExtension()
         ?: "Audio Track",
     )
   }
-  LaunchedEffect(currentItem?.stableId, currentItem?.title, mediaTitle) {
-    val updatedTitle = currentItem?.title?.takeIf { it.isNotBlank() } ?: mediaTitle
+  LaunchedEffect(currentItem?.stableId, itemTitle, controlsTitle) {
+    val updatedTitle = itemTitle ?: controlsTitle
     if (!updatedTitle.isNullOrBlank()) {
       lastValidTitle = updatedTitle.stripAudioExtension()
     }
@@ -938,9 +952,11 @@ fun AudioPlayerControls(
   AudioSpectrumCaptureEffect(
     enabled =
       isPlaying &&
+        inAppSheet?.isVisible != false &&
         !isSheetOpen &&
         ((showVisualizer && !showInPlaceLyrics) ||
           (audioWavySeekbar && !isLyricsFullscreen)),
+    requestPermission = showVisualizer && !showInPlaceLyrics && !isLyricsFullscreen && !isSheetOpen && inAppSheet?.isSettledOpen != false,
     features = visualizerFeatures,
   )
 
@@ -1490,7 +1506,7 @@ fun AudioPlayerControls(
                 ) {
                   CoverArtCardImage(
                     bitmap = prevCoverBitmap,
-                    artworkUrl = prevItem?.tvgLogo?.takeIf { it.isNotBlank() && !isLocalArtworkSource(prevItem?.path) },
+                    artworkUrl = prevItem?.tvgLogo?.takeIf { it.isNotBlank() && !isLocalArtworkSource(prevItem.path) },
                     contentScale = if (isAudiobook) ContentScale.Fit else ContentScale.Crop,
                   )
                 }
@@ -1508,7 +1524,7 @@ fun AudioPlayerControls(
                 ) {
                   CoverArtCardImage(
                     bitmap = nextCoverBitmap,
-                    artworkUrl = nextItem?.tvgLogo?.takeIf { it.isNotBlank() && !isLocalArtworkSource(nextItem?.path) },
+                    artworkUrl = nextItem?.tvgLogo?.takeIf { it.isNotBlank() && !isLocalArtworkSource(nextItem.path) },
                     contentScale = if (isAudiobook) ContentScale.Fit else ContentScale.Crop,
                   )
                 }
@@ -2901,8 +2917,9 @@ private fun UpNextPlaylistContent(
   val playingItemIndex by remember(displayPlaylist) {
     derivedStateOf { displayPlaylist.indexOfFirst { it.isPlaying } }
   }
+  val playingItemKey = displayPlaylist.getOrNull(playingItemIndex)?.queueEntryId
 
-  LaunchedEffect(playingItemIndex) {
+  LaunchedEffect(playingItemKey) {
     if (playingItemIndex >= 0) {
       lazyListState.animateScrollToItem(playingItemIndex)
     }
@@ -2970,11 +2987,15 @@ private fun UpNextPlaylistContent(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        // A queue can contain the same URI more than once.
-        items(displayPlaylist.size, key = { index -> displayPlaylist[index].index }) { index ->
+        // Queue entry IDs stay with rows when positions change, including duplicate URIs.
+        items(displayPlaylist.size, key = { index -> displayPlaylist[index].queueEntryId }) { index ->
           val item = displayPlaylist[index]
           if (showDragHandle) {
-            ReorderableItem(reorderableLazyListState, key = item.index) { isDragging ->
+            ReorderableItem(
+              reorderableLazyListState,
+              key = item.queueEntryId,
+              animateItemModifier = Modifier,
+            ) { isDragging ->
               val isDraggingPrev = remember { mutableStateOf(false) }
               LaunchedEffect(isDragging) {
                 if (isDraggingPrev.value && !isDragging) {
@@ -2990,7 +3011,7 @@ private fun UpNextPlaylistContent(
               UpNextPlaylistItemRow(
                 item = item,
                 isPlaying = item.isPlaying,
-                onClick = { viewModel.playPlaylistItem(item.index) },
+                onClick = { viewModel.playPlaylistItem(index) },
                 scope = this,
                 isDragging = isDragging,
                 reorderFeedback = reorderFeedback,
@@ -3000,7 +3021,7 @@ private fun UpNextPlaylistContent(
             UpNextPlaylistItemRow(
               item = item,
               isPlaying = item.isPlaying,
-              onClick = { viewModel.playPlaylistItem(item.index) },
+              onClick = { viewModel.playPlaylistItem(index) },
               scope = null,
             )
           }
@@ -3033,10 +3054,15 @@ private fun UpNextPlaylistItemRow(
 
   Surface(
     onClick = onClick,
-    modifier = Modifier.fillMaxWidth(),
+    modifier =
+      Modifier
+        .fillMaxWidth()
+        .outsideShadow(
+          RoundedCornerShape(16.dp),
+          radius = dragElevation(isDragging, app.gyrolet.mpvrx.ui.theme.AppMotion.playerReducedMotion()),
+        ),
     shape = RoundedCornerShape(16.dp),
     color = bgColor,
-    shadowElevation = dragElevation(isDragging, app.gyrolet.mpvrx.ui.theme.AppMotion.playerReducedMotion()),
   ) {
     Row(
       modifier = Modifier

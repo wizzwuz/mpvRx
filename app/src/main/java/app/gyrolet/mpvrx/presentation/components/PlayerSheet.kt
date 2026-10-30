@@ -122,6 +122,7 @@ fun PlayerSheet(
   title: String? = null,
   actions: @Composable RowScope.() -> Unit = {},
   useFrostedGlass: Boolean = true,
+  bottomBar: (@Composable () -> Unit)? = null,
   content: @Composable () -> Unit,
 ) {
   val scope = rememberCoroutineScope()
@@ -279,6 +280,7 @@ fun PlayerSheet(
             Box(Modifier.fillMaxWidth().weight(1f, fill = false)) {
               content()
             }
+            bottomBar?.invoke()
           }
         }
       },

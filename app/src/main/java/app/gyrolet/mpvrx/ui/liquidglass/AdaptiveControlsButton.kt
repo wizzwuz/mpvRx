@@ -39,7 +39,9 @@ import app.gyrolet.mpvrx.ui.icons.AppIcon
 import app.gyrolet.mpvrx.ui.icons.AnimatedIcon
 import app.gyrolet.mpvrx.ui.player.controls.LocalPlayerButtonsClickEvent
 import app.gyrolet.mpvrx.ui.player.controls.PlayerButtonAlpha
-import app.gyrolet.mpvrx.ui.player.controls.components.LocalHidePlayerButtonsBackground
+import app.gyrolet.mpvrx.ui.player.controls.components.LocalBorderlessPlayerControls
+import app.gyrolet.mpvrx.ui.player.controls.components.LocalPlayerButtonsOpacity
+import app.gyrolet.mpvrx.ui.player.controls.components.asPlayerButtonBackground
 import app.gyrolet.mpvrx.ui.player.controls.components.playerButtonBorderColor
 import app.gyrolet.mpvrx.ui.player.controls.components.playerButtonContainerColor
 import app.gyrolet.mpvrx.ui.player.controls.components.playerButtonContentColor
@@ -60,12 +62,12 @@ fun AdaptiveControlsButton(
   title: String? = null,
   color: Color? = null,
   surfaceColor: Color = Color.Unspecified,
-  buttonSize: Dp = 40.dp,
+  buttonSize: Dp = PlayerLiquidTokens.ButtonSize,
   useGlass: Boolean = true,
   backdrop: Backdrop? = LocalKyantPlayerBackdrop.current,
   enabled: Boolean = true,
   onLongClickLabel: String? = null,
-  hideBackground: Boolean? = null,
+  borderless: Boolean? = null,
 ) {
   AdaptiveControlsContainer(
     onClick = onClick,
@@ -74,7 +76,7 @@ fun AdaptiveControlsButton(
     color = color ?: Color.Unspecified,
     surfaceColor = surfaceColor,
     useGlass = useGlass,
-    hideBackground = hideBackground ?: LocalHidePlayerButtonsBackground.current,
+    borderless = borderless ?: LocalBorderlessPlayerControls.current,
     buttonSize = buttonSize,
     spacing = 4.dp,
     horizontalPadding = if (text != null) 8.dp else 0.dp,
@@ -112,7 +114,7 @@ fun AdaptiveControlsContainer(
   surfaceColor: Color = Color.Unspecified,
   isInteractive: Boolean = true,
   useGlass: Boolean = true,
-  hideBackground: Boolean = LocalHidePlayerButtonsBackground.current,
+  borderless: Boolean = LocalBorderlessPlayerControls.current,
   buttonSize: Dp = 40.dp,
   spacing: Dp = 8.dp,
   horizontalPadding: Dp? = null,
@@ -127,15 +129,31 @@ fun AdaptiveControlsContainer(
   val reduceMotion = AppMotion.playerReducedMotion()
   val resolvedTint =
     color.takeUnless { it == Color.Unspecified }
-      ?: if (hideBackground) LocalContentColor.current
+      ?: if (borderless) LocalContentColor.current
       else if (liquidGlassEnabled) PlayerLiquidTokens.contentColor else playerButtonContentColor()
+  val backgroundLevel = LocalPlayerButtonsOpacity.current
   val resolvedSurface =
-    surfaceColor.takeUnless { it == Color.Unspecified }
-      ?: if (liquidGlassEnabled) PlayerLiquidTokens.surfaceColor else playerButtonContainerColor()
+    if (liquidGlassEnabled) {
+      // Below the default level the whole glass layer fades instead (glassLayerAlpha).
+      val base = surfaceColor.takeUnless { it == Color.Unspecified } ?: PlayerLiquidTokens.surfaceColor
+      base.copy(
+        alpha =
+          PlayerButtonAlpha.background(
+            base.alpha,
+            maxOf(backgroundLevel, PlayerButtonAlpha.DEFAULT_BACKGROUND_LEVEL),
+          ),
+      )
+    } else {
+      surfaceColor.takeUnless { it == Color.Unspecified }?.asPlayerButtonBackground()
+        ?: playerButtonContainerColor()
+    }
   val contentTint =
     if (enabled) resolvedTint else resolvedTint.copy(alpha = resolvedTint.alpha * PlayerButtonAlpha.DISABLED_CONTENT)
-  val renderLiquidGlass = liquidGlassEnabled && useGlass && !hideBackground
+  val renderLiquidGlass = liquidGlassEnabled && useGlass && !borderless
   val buttonShape = if (horizontalPadding != null && horizontalPadding > 0.dp) Capsule() else CircleShape
+  // Above the default level the glass tint thickens toward opaque; below it the whole glass fades.
+  val glassLayerAlpha =
+    (backgroundLevel / PlayerButtonAlpha.DEFAULT_BACKGROUND_LEVEL).coerceIn(0f, 1f)
   val controlModifier =
     modifier
       // LiquidButton already clips its glass to the capsule. Clipping again here, over the larger
@@ -162,18 +180,24 @@ fun AdaptiveControlsContainer(
         spacing = spacing,
         horizontalPadding = horizontalPadding ?: 8.dp,
         backdrop = backdrop,
+        backgroundAlpha = glassLayerAlpha,
         content = content,
       )
     }
   } else {
     Surface(
       shape = CircleShape,
-      color = if (hideBackground || !useGlass) Color.Transparent else resolvedSurface,
+      color =
+        if (borderless || !useGlass) {
+          Color.Transparent
+        } else {
+          resolvedSurface
+        },
       contentColor = contentTint,
       tonalElevation = 0.dp,
       shadowElevation = 0.dp,
       border =
-        if (hideBackground || !useGlass) {
+        if (borderless || !useGlass) {
           null
         } else {
           BorderStroke(1.dp, playerButtonBorderColor())

@@ -366,12 +366,54 @@ class MPVView(
     )
   }
 
-  /**
-   * On-screen aspect of the current video with rotation metadata applied, or null while unknown.
-   * See [VideoDisplayGeometry] for why this never falls back to the unrotated top-level size.
-   */
-  fun getVideoOutAspect(): Double? =
-    VideoDisplayGeometry.read()?.displayAspect?.takeIf { it.isFinite() && it > 0.0 }
+  fun getVideoOutAspect(): Double? {
+    // Try to get aspect from video-params/aspect first
+    val rawAspect = PlaybackSession.getPropertyDouble("video-params/aspect")
+    // Before the first decoded frame video-params is absent and width/height below are the
+    // container's unrotated size, so use the container's rotation instead of assuming 0.
+    val rotate = PlaybackSession.getPropertyInt("video-params/rotate") ?: rotationBeforeDecode()
+
+    // If aspect is not available or 0, calculate from width and height
+    val finalAspect =
+      if (rawAspect == null || rawAspect < 0.001) {
+        val width =
+          runCatching {
+            PlaybackSession.getPropertyInt("width") ?: PlaybackSession.getPropertyInt("video-params/w") ?: 0
+          }.getOrDefault(0)
+
+        val height =
+          runCatching {
+            PlaybackSession.getPropertyInt("height") ?: PlaybackSession.getPropertyInt("video-params/h") ?: 0
+          }.getOrDefault(0)
+
+        if (width > 0 && height > 0) {
+          width.toDouble() / height.toDouble()
+        } else {
+          null
+        }
+      } else {
+        rawAspect
+      }
+
+    return finalAspect?.let { aspect ->
+      if (aspect <= 0.001) {
+        return null
+      }
+      val normalizedRotate = ((rotate % 360) + 360) % 360
+      val isRotated = normalizedRotate == 90 || normalizedRotate == 270
+      val correctedAspect = if (isRotated) 1.0 / aspect else aspect
+      correctedAspect
+    }
+  }
+
+  /** Mirrors mpv's decoder: `video-rotate=no` drops container rotation, otherwise it is added. */
+  private fun rotationBeforeDecode(): Int {
+    val option = runCatching { PlaybackSession.getPropertyString("video-rotate") }.getOrNull()?.trim()
+    if (option.equals("no", ignoreCase = true)) return 0
+    val container =
+      runCatching { PlaybackSession.getPropertyInt("current-tracks/video/demux-rotation") }.getOrNull() ?: 0
+    return container + (option?.toIntOrNull() ?: 0)
+  }
 
   class TrackDelegate(
     private val name: String,
@@ -615,14 +657,13 @@ class MPVView(
   }
 
   /**
-   * A paused mpv does not render onto a new or resized Surface by itself, leaving a black or
-   * stretched buffer. A zero-distance exact seek re-renders the current frame (as REX Player does).
+   * Repaint the retained video output onto a replacement presentation window while paused.
    */
   private fun redrawPausedFrame() {
     if (isExiting || !isSurfaceReady) return
     val state = PlaybackSession.state.value
     if (!state.paused || state.phase != PlaybackPhase.READY || !PlaybackSession.isSurfaceAttachedTo(this)) return
-    PlaybackSession.command("seek", "0", "relative+exact")
+    PlaybackSession.redrawVideoFrame()
   }
 
   override fun onRenderSurfaceAvailable(surface: Surface, width: Int, height: Int) {

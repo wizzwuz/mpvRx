@@ -30,9 +30,8 @@ import android.util.Log
 import android.util.LruCache
 import android.view.inputmethod.InputMethodManager
 import android.webkit.MimeTypeMap
-import android.widget.Toast
+import app.gyrolet.mpvrx.ui.components.AppToast as Toast
 import androidx.core.net.toUri
-import androidx.core.view.WindowInsetsCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -104,6 +103,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -1049,7 +1049,7 @@ class PlayerViewModel(
   fun seekAudioTo(positionSeconds: Float) {
     if (!positionSeconds.isFinite()) return
     if (PlaybackSession.state.value.currentItem?.audiobook != null) AudiobookPlayback.seekInBook((positionSeconds * 1000).toLong())
-    else seekTo(positionSeconds.toInt(), fast = false)
+    else seekFromScrub(positionSeconds)
   }
 
   // Audio player UI state
@@ -1962,10 +1962,21 @@ fun restartFromBeginning() {
   runCatching { PlaybackSession.setPropertyBoolean("pause", false) }
 }
 
-val isBrightnessSliderShown = MutableStateFlow(false)
+  val isBrightnessSliderShown = MutableStateFlow(false)
   val isVolumeSliderShown = MutableStateFlow(false)
   val volumeSliderTimestamp = MutableStateFlow(0L)
   val brightnessSliderTimestamp = MutableStateFlow(0L)
+
+  /** Dismiss gesture feedback without changing playback, volume, brightness or the control lock. */
+  fun dismissAdjustmentOverlays(): Boolean {
+    if (!isVolumeSliderShown.value && !isBrightnessSliderShown.value) return false
+    isVolumeSliderShown.value = false
+    isBrightnessSliderShown.value = false
+    volumeSliderTimestamp.value = 0L
+    brightnessSliderTimestamp.value = 0L
+    return true
+  }
+
   val currentBrightness =
     MutableStateFlow(
       runCatching {
@@ -2070,7 +2081,7 @@ val isBrightnessSliderShown = MutableStateFlow(false)
 
   private val _seekState = MutableStateFlow(SeekState())
   val seekState: StateFlow<SeekState> = _seekState.asStateFlow()
-
+  private var tvSeekFeedbackJob: Job? = null
 
   // Frame navigation
   private val _currentFrame = MutableStateFlow(0)
@@ -2627,6 +2638,30 @@ val isBrightnessSliderShown = MutableStateFlow(false)
         }
     }
 
+    // Embedded settings do not leave/resume the Activity. Apply these preference changes to
+    // the active core as they happen, preserving the current session on the initial emission.
+    viewModelScope.launch(playbackStateDispatcher) {
+      audioPreferences.audioPitchCorrection.changes().distinctUntilChanged().drop(1).collect { enabled ->
+        if (_isMpvCoreReady.value) PlaybackSession.setPropertyBoolean("audio-pitch-correction", enabled)
+      }
+    }
+    viewModelScope.launch(playbackStateDispatcher) {
+      subtitlesPreferences.overrideAssSubs.changes().distinctUntilChanged().drop(1).collect { force ->
+        if (_isMpvCoreReady.value) {
+          applySubtitleLayout(subtitlesPreferences.subPos.get(), force, subtitlesPreferences.secondarySubPos.get())
+        }
+      }
+    }
+    viewModelScope.launch(playbackStateDispatcher) {
+      subtitlesPreferences.scaleByWindow.changes().distinctUntilChanged().drop(1).collect { enabled ->
+        if (_isMpvCoreReady.value) {
+          val value = if (enabled) "yes" else "no"
+          PlaybackSession.setPropertyString("sub-scale-by-window", value)
+          PlaybackSession.setPropertyString("sub-use-margins", value)
+        }
+      }
+    }
+
     // Monitor duration and AB loop changes to automatically enable precise seeking
     viewModelScope.launch(playbackStateDispatcher) {
       combine(_duration, abLoopState) { duration, abLoop ->
@@ -2922,13 +2957,16 @@ val isBrightnessSliderShown = MutableStateFlow(false)
   }
 
   fun onVideoLoadStarted() {
+    if (tvSeekFeedbackJob != null) {
+      tvSeekFeedbackJob?.cancel()
+      tvSeekFeedbackJob = null
+      _seekState.value = SeekState()
+    }
     cancelSeekPreview()
     cancelFrameSeek()
     seekCommitJob?.cancel()
     seekCommitJob = null
-    seekCoalesceJob?.cancel()
-    seekCoalesceJob = null
-    pendingSeekOffset = 0
+    cancelPendingRelativeSeek()
     lyricsLoadJob?.cancel()
     lyricsLoadJob = null
     lyricsTranslateJob?.cancel()
@@ -3378,14 +3416,17 @@ val isBrightnessSliderShown = MutableStateFlow(false)
   }
 
   // Seek coalescing for smooth performance
+  private val seekCoalesceLock = Any()
   private var pendingSeekOffset: Int = 0
+  private var pendingSeekGeneration: Long? = null
+  private var seekCoalesceRevision = 0L
   private var seekCoalesceJob: Job? = null
   private val seekPreviewLock = Any()
   private var pendingSeekPreviewPosition: Float? = null
+  private var seekPreviewIsFrame = false
 
-  // Moves the seekbar thumb immediately so rapid seeks animate instead of jumping only
-  // after the decoder reports the new position. The position poller then keeps the optimistic
-  // value until the player actually lands on it, so the thumb never snaps backwards.
+  // Move the thumb immediately while a native seek runs. The poller resumes when an exact
+  // target lands or the bounded hold expires, allowing fast keyframe seeks to settle too.
   private var seekFeedbackHoldUntilElapsed = 0L
   private var seekFeedbackTargetPosition = 0f
 
@@ -3460,9 +3501,7 @@ val isBrightnessSliderShown = MutableStateFlow(false)
     const val ABSOLUTE_SEEK_FEEDBACK_HOLD_MS = 3000L
     // The thumb updates immediately; decoder previews only need a modest cadence.
     const val PREVIEW_SEEK_INTERVAL_MS = 200L
-    // Network previews open remote ranges; keep them rare so the final seek is not queued behind
-    // abandoned preview work.
-    const val NETWORK_PREVIEW_SEEK_INTERVAL_MS = 800L
+    const val NETWORK_FRAME_PREVIEW_SEEK_INTERVAL_MS = 800L
     const val FRAME_SEEK_POLL_INTERVAL_MS = 10L
     const val FRAME_SEEK_MIN_SETTLE_POLLS = 8
     const val FRAME_SEEK_MAX_SETTLE_POLLS = 75
@@ -3649,6 +3688,9 @@ val isBrightnessSliderShown = MutableStateFlow(false)
         val mpvPath = uri.resolveUri(appContext) ?: uri.toString()
         val mode = if (select) "select" else "auto"
 
+        // Keep the original URI even when mpv already auto-loaded this file.
+        mpvPathToUriMap[mpvPath] = uri.toString()
+
         // Check if MPV already auto-loaded this subtitle (prevents duplication)
         val existingTrack = subtitleTracks.value.find { it.externalFilename == mpvPath }
         if (existingTrack != null) {
@@ -3664,9 +3706,6 @@ val isBrightnessSliderShown = MutableStateFlow(false)
           }
           return@withLock
         }
-
-        // Store mapping for reliable physical deletion later
-        mpvPathToUriMap[mpvPath] = uri.toString()
 
         withContext(Dispatchers.Main) {
           PlaybackSession.command("sub-add", mpvPath, mode, fileName)
@@ -3694,6 +3733,10 @@ val isBrightnessSliderShown = MutableStateFlow(false)
   }
 
   private var translationJob: Job? = null
+
+  /** Reopen a picked subtitle using its original content URI instead of mpv's private fd path. */
+  internal fun clipSubtitleSource(externalPath: String): String =
+    mpvPathToUriMap[externalPath] ?: externalPath
 
   fun translateSubtitle(
     track: TrackNode,
@@ -5101,37 +5144,16 @@ val isBrightnessSliderShown = MutableStateFlow(false)
 
   // ==================== UI Control ====================
 
+  // PlayerActivity is the sole owner of system bar visibility. Updating the control state
+  // here lets it apply both user preferences consistently on all supported Android versions.
   fun showControls() {
     if (sheetShown.value != Sheets.None || panelShown.value != Panels.None) return
-    if (!isAudioOnly.value && !hostedInBrowser) {
-      try {
-        if (playerPreferences.showSystemStatusBar.get()) {
-          host?.windowInsetsController?.show(WindowInsetsCompat.Type.statusBars())
-          host?.windowInsetsController?.isAppearanceLightStatusBars = false
-        }
-        if (playerPreferences.showSystemNavigationBar.get()) {
-          host?.windowInsetsController?.show(WindowInsetsCompat.Type.navigationBars())
-        }
-      } catch (e: Exception) {
-        // Defensive: InsetsController animation can crash under FD pressure
-        // (e.g. during high-res HEVC playback on certain devices)
-        Log.e(TAG, "Failed to show system bars", e)
-      }
-    }
     _controlsShown.value = true
     _controlsInteractionEpoch.value++
     controlsVisibleForPolling = true
   }
 
   fun hideControls() {
-    if (!isAudioOnly.value && !hostedInBrowser) {
-      try {
-        host?.windowInsetsController?.hide(WindowInsetsCompat.Type.statusBars())
-        host?.windowInsetsController?.hide(WindowInsetsCompat.Type.navigationBars())
-      } catch (e: Exception) {
-        Log.e(TAG, "Failed to hide system bars", e)
-      }
-    }
     _controlsShown.value = false
     _seekBarShown.value = false
     controlsVisibleForPolling = false
@@ -5139,14 +5161,6 @@ val isBrightnessSliderShown = MutableStateFlow(false)
   }
 
   fun autoHideControls() {
-    if (!isAudioOnly.value && !hostedInBrowser) {
-      try {
-        host?.windowInsetsController?.hide(WindowInsetsCompat.Type.statusBars())
-        host?.windowInsetsController?.hide(WindowInsetsCompat.Type.navigationBars())
-      } catch (e: Exception) {
-        Log.e(TAG, "Failed to hide system bars", e)
-      }
-    }
     _controlsShown.value = false
     _seekBarShown.value = true
     controlsVisibleForPolling = false
@@ -5167,9 +5181,7 @@ val isBrightnessSliderShown = MutableStateFlow(false)
     cancelFrameSeek()
     seekCommitJob?.cancel()
     seekCommitJob = null
-    seekCoalesceJob?.cancel()
-    seekCoalesceJob = null
-    pendingSeekOffset = 0
+    cancelPendingRelativeSeek()
 
     synchronized(ambientScheduleLock) {
       ambientUpdateGeneration.incrementAndGet()
@@ -5199,47 +5211,81 @@ val isBrightnessSliderShown = MutableStateFlow(false)
     previewSeekPositionOptimistically(offset)
   }
 
+  /** TV scrubbing never consults the phone's touch/double-tap mappings or saved duration. */
+  fun seekFromTvRemote(offset: Int) {
+    tvSeekFeedbackJob?.cancel()
+    _seekState.update { state ->
+      val sameDirection = state.isForwards == (offset > 0)
+      state.copy(amount = if (sameDirection) state.amount + offset else offset, isForwards = offset > 0, text = null)
+    }
+    // TV does not compose GestureHandler, which owns the phone's feedback reset. Restart on
+    // every remote repeat, including identical steps at a media boundary, then fade out at rest.
+    tvSeekFeedbackJob = viewModelScope.launch {
+      delay(800L)
+      _seekState.value = SeekState()
+    }
+    seekBy(offset)
+  }
+
   /**
    * Conflated live preview used by the legacy/full-screen seek mode and the audio seekbar.
    * Pointer events can arrive much faster than a decoder can seek, so only the newest target is
-   * applied at a bounded rate. Preview seeks are keyframe-only and never spam Syncplay peers.
+   * applied at a bounded rate. Local preview seeks are keyframe-only and never spam Syncplay peers.
+   * Network targets update the thumb/time only until release, preserving the demuxer's read-ahead.
    */
-  fun seekPreviewTo(position: Float) {
+  fun seekPreviewTo(position: Float) = scheduleSeekPreview(position, framePreview = false)
+
+  private fun scheduleSeekPreview(position: Float, framePreview: Boolean) {
     cancelFrameSeek()
     val generation = PlaybackSession.state.value.generation
     previewAbsoluteSeekPositionOptimistically(position.coerceAtLeast(0f).toDouble())
     synchronized(seekPreviewLock) {
       pendingSeekPreviewPosition = position.coerceAtLeast(0f)
-      if (seekPreviewJob?.isActive == true) return
-      seekPreviewJob = viewModelScope.launch(Dispatchers.IO) { runSeekPreviewLoop(generation) }
+      if (seekPreviewJob?.isActive == true && seekPreviewIsFrame == framePreview) return
+      seekPreviewJob?.cancel()
+      seekPreviewIsFrame = framePreview
+      seekPreviewJob = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+        runSeekPreviewLoop(generation, framePreview)
+      }
+      seekPreviewJob?.start()
     }
   }
 
-  private suspend fun runSeekPreviewLoop(generation: Long) {
+  private suspend fun runSeekPreviewLoop(generation: Long, framePreview: Boolean) {
     var lastSentPosition: Float? = null
-    // Network seek previews each cost an upstream range open on some servers (SMB/WebDAV can take
-    // most of a second per open), so they run at a much lower cadence than local previews.
-    val isNetworkItem =
-      PlaybackSession.state.value.currentItem?.let { item ->
-        item.networkSource != null || item.originalUri.startsWith("mpvrx-network://")
-      } == true
-    val intervalMs = if (isNetworkItem) NETWORK_PREVIEW_SEEK_INTERVAL_MS else PREVIEW_SEEK_INTERVAL_MS
-    while (kotlinx.coroutines.currentCoroutineContext().isActive) {
-      val target =
-        synchronized(seekPreviewLock) {
-          pendingSeekPreviewPosition?.also { pendingSeekPreviewPosition = null }
-            ?: run {
-              seekPreviewJob = null
-              return
-            }
+    val owner = currentCoroutineContext()[Job]
+    val networkFrame = framePreview && PlaybackSession.state.value.currentItem?.let {
+      it.networkSource != null || it.originalUri.startsWith("mpvrx-network://")
+    } == true
+    val intervalMs = if (networkFrame) NETWORK_FRAME_PREVIEW_SEEK_INTERVAL_MS else PREVIEW_SEEK_INTERVAL_MS
+    try {
+      while (currentCoroutineContext().isActive) {
+        val target = synchronized(seekPreviewLock) {
+          if (seekPreviewJob !== owner) return
+          pendingSeekPreviewPosition?.also { pendingSeekPreviewPosition = null } ?: return
         }
-      // Repeated pointer events at effectively the same time position should not cause another
-      // MediaCodec flush. A final exact seek still runs when the user releases the thumb.
-      val previous = lastSentPosition
-      if (previous != null && kotlin.math.abs(target - previous) < 0.5f) continue
-      if (!PlaybackSession.commandForGeneration(generation, "seek", target.toString(), "absolute+keyframes")) return
-      lastSentPosition = target
-      delay(intervalMs)
+        val previous = lastSentPosition
+        if (previous != null && kotlin.math.abs(target - previous) < 0.5f) continue
+        val issued = synchronized(seekPreviewLock) {
+          // Cancellation and native issuance share this lock, so a late preview cannot overtake release.
+          if (seekPreviewJob !== owner || owner?.isActive != true) return
+          if (framePreview) {
+            PlaybackSession.commandForGeneration(generation, "seek", target.toString(), "absolute+keyframes")
+          } else {
+            PlaybackSession.previewSeekForGeneration(generation, target)
+          }
+        }
+        if (!issued) return
+        lastSentPosition = target
+        delay(intervalMs)
+      }
+    } finally {
+      synchronized(seekPreviewLock) {
+        if (seekPreviewJob === owner) {
+          seekPreviewJob = null
+          pendingSeekPreviewPosition = null
+        }
+      }
     }
   }
 
@@ -5255,11 +5301,24 @@ val isBrightnessSliderShown = MutableStateFlow(false)
     position: Int,
     fast: Boolean = false,
   ) {
+    commitSeek(position, if (fast) "absolute+keyframes" else "absolute+exact")
+  }
+
+  /** Like relative skips, a user scrub honors hr-seek and mpv.conf instead of forcing exact decoding. */
+  fun seekFromScrub(position: Float, resumePlayback: Boolean = false) {
+    if (!position.isFinite()) {
+      Log.w(TAG, "Ignoring a non-finite scrub target")
+      return
+    }
+    commitSeek(position.toInt(), "absolute", resumePlayback)
+  }
+
+  private fun commitSeek(position: Int, seekMode: String, resumePlayback: Boolean = false) {
     cancelFrameSeek()
     cancelSeekPreview()
     val generation = PlaybackSession.state.value.generation
     seekCommitJob?.cancel()
-    seekCommitJob = viewModelScope.launch(Dispatchers.IO) {
+    seekCommitJob = viewModelScope.launch(playbackStateDispatcher) {
       if (!PlaybackSession.isCurrentGeneration(generation)) return@launch
       val maxDuration =
         (PlaybackSession.getPropertyDouble("duration")?.toInt() ?: duration ?: _preciseDuration.value.toInt())
@@ -5281,17 +5340,16 @@ val isBrightnessSliderShown = MutableStateFlow(false)
       previewAbsoluteSeekPositionOptimistically(clampedPosition.toDouble())
 
       // Cancel pending relative seek before absolute seek
-      seekCoalesceJob?.cancel()
-      pendingSeekOffset = 0
+      cancelPendingRelativeSeek()
 
-      // Every committed seek lands exactly on the requested position. Keyframe seeking would
-      // leave the player at a different time than the thumb already showed, so the bar would
-      // visibly snap back once the seek finished. Flags stay within the vocabulary mpv accepts
-      // for the seek command; "hr-seek" is an option, not a flag, and using it here made mpv
-      // reject the command, so the thumb moved while the video stayed put.
-      val seekMode =
-        if (!fast) "absolute+exact" else "absolute+keyframes"
+      currentCoroutineContext().ensureActive()
       if (!PlaybackSession.commandForGeneration(generation, "seek", clampedPosition.toString(), seekMode)) return@launch
+      if (resumePlayback) {
+        val focusGranted = withContext(Dispatchers.Main) { host?.requestAudioFocus() ?: false }
+        currentCoroutineContext().ensureActive()
+        if (!PlaybackSession.isCurrentGeneration(generation)) return@launch
+        if (focusGranted && !PlaybackSession.setPausedForGeneration(generation, false)) return@launch
+      }
       syncplayManager.updatePlayerState(
         clampedPosition.toDouble(),
         PlaybackSession.getPropertyBoolean("pause") ?: false,
@@ -5300,53 +5358,59 @@ val isBrightnessSliderShown = MutableStateFlow(false)
     }
   }
 
+  private fun cancelPendingRelativeSeek() {
+    synchronized(seekCoalesceLock) {
+      seekCoalesceRevision++
+      seekCoalesceJob?.cancel()
+      seekCoalesceJob = null
+      pendingSeekOffset = 0
+      pendingSeekGeneration = null
+    }
+  }
+
   private fun coalesceSeek(offset: Int) {
     val generation = PlaybackSession.state.value.generation
-    pendingSeekOffset += offset
-    seekCoalesceJob?.cancel()
-    seekCoalesceJob =
-      viewModelScope.launch(Dispatchers.IO) {
+    synchronized(seekCoalesceLock) {
+      if (pendingSeekGeneration != generation) pendingSeekOffset = 0
+      pendingSeekGeneration = generation
+      pendingSeekOffset += offset
+      val revision = ++seekCoalesceRevision
+      seekCoalesceJob?.cancel()
+      seekCoalesceJob = viewModelScope.launch(Dispatchers.IO) {
         delay(SEEK_COALESCE_DELAY_MS)
-        if (!PlaybackSession.isCurrentGeneration(generation)) return@launch
-        val toApply = pendingSeekOffset
-        pendingSeekOffset = 0
-
-        if (toApply != 0) {
-          if (PlaybackSession.state.value.currentItem?.audiobook != null) {
-            AudiobookPlayback.seekBy(toApply)
-            return@launch
-          }
-          val duration =
-            PlaybackSession.getPropertyDouble("duration")?.toInt()
-              ?: duration
-              ?: _preciseDuration.value.toInt()
-          val currentPos =
-            PlaybackSession.getPropertyDouble("time-pos")?.toInt()
-              ?: (pos ?: 0)
-
-          if (duration > 0 && currentPos + toApply >= duration) {
-            // If seeking past the end, force seek to 100% absolute to ensure EOF is triggered
-            PlaybackSession.commandForGeneration(generation, "seek", "100", "absolute-percent+exact")
-          } else {
-            // Exact landing, for the same reason as the absolute seek above.
-            val seekMode = "relative+exact"
-            PlaybackSession.commandForGeneration(generation, "seek", toApply.toString(), seekMode)
-          }
-          val currentPositionDouble =
-            PlaybackSession.getPropertyDouble("time-pos") ?: currentPos.toDouble()
-          val synchronizedPosition =
-            if (duration > 0 && currentPos + toApply >= duration) {
-              duration.toDouble()
-            } else {
-              (currentPositionDouble + toApply).coerceAtLeast(0.0)
-            }
-          syncplayManager.updatePlayerState(
-            synchronizedPosition,
-            PlaybackSession.getPropertyBoolean("pause") ?: false,
-            doSeek = true,
-          )
+        // UI taps and IO workers share this total. An older cancelled worker must never
+        // consume or clear an offset already reserved for a newer batch.
+        val toApply = synchronized(seekCoalesceLock) {
+          if (revision != seekCoalesceRevision) return@launch
+          pendingSeekOffset.also { pendingSeekOffset = 0 }
         }
+        if (toApply == 0 || !PlaybackSession.isCurrentGeneration(generation)) return@launch
+        if (PlaybackSession.state.value.currentItem?.audiobook != null) {
+          AudiobookPlayback.seekBy(toApply)
+          return@launch
+        }
+        val duration = PlaybackSession.getPropertyDouble("duration")?.toInt()
+          ?: duration ?: _preciseDuration.value.toInt()
+        val currentPos = PlaybackSession.getPropertyDouble("time-pos") ?: (pos ?: 0).toDouble()
+        val reachesEnd = duration > 0 && currentPos + toApply >= duration
+        val issued = if (reachesEnd) {
+          // Keep the existing explicit EOF transition when skipping past the final frame.
+          PlaybackSession.commandForGeneration(generation, "seek", "100", "absolute-percent+exact")
+        } else {
+          // MPSEEK_DEFAULT inherits hr-seek, including Fast/Precise, short-video/AB-loop
+          // policy and user-owned mpv.conf. An explicit +exact overrides all those choices.
+          PlaybackSession.commandForGeneration(generation, "seek", toApply.toString(), "relative")
+        }
+        if (!issued) return@launch
+        // Use the pre-seek snapshot; reading an already-updated position would add the skip twice.
+        val synchronizedPosition = if (reachesEnd) duration.toDouble() else (currentPos + toApply).coerceAtLeast(0.0)
+        syncplayManager.updatePlayerState(
+          synchronizedPosition,
+          PlaybackSession.getPropertyBoolean("pause") ?: false,
+          doSeek = true,
+        )
       }
+    }
   }
 
   fun leftSeek() {
@@ -5662,6 +5726,7 @@ val isBrightnessSliderShown = MutableStateFlow(false)
   fun changeVideoAspect(
     aspect: VideoAspect,
     showUpdate: Boolean = true,
+    resetZoom: Boolean = true,
   ) {
     if (MpvConfigOverridePolicy.ownsAny(MpvConfigControlledFeatures.VIDEO_ASPECT)) return
     when (aspect) {
@@ -5707,6 +5772,9 @@ val isBrightnessSliderShown = MutableStateFlow(false)
       }
     }
 
+    // A selected preset replaces manual zoom and pan; internal reapplication preserves them.
+    if (resetZoom) resetVideoZoom()
+
     // Update the state
     playerPreferences.lastVideoAspect.set(aspect)
     playerPreferences.lastCustomAspectRatio.set(-1f)
@@ -5723,10 +5791,12 @@ val isBrightnessSliderShown = MutableStateFlow(false)
   fun setCustomAspectRatio(
     ratio: Double,
     showUpdate: Boolean = true,
+    resetZoom: Boolean = true,
   ) {
     if (MpvConfigOverridePolicy.ownsAny(MpvConfigControlledFeatures.VIDEO_ASPECT)) return
     PlaybackSession.setPropertyDouble("panscan", 0.0)
     PlaybackSession.setPropertyDouble("video-aspect-override", ratio)
+    if (resetZoom) resetVideoZoom()
     playerPreferences.lastCustomAspectRatio.set(ratio.toFloat())
     _currentAspectRatio.value = ratio
     onAmbientGeometryChanged()
@@ -5738,11 +5808,11 @@ val isBrightnessSliderShown = MutableStateFlow(false)
   fun restoreSavedVideoAspect(showUpdate: Boolean = false) {
     val customAspectRatio = playerPreferences.lastCustomAspectRatio.get()
     if (customAspectRatio > 0f) {
-      setCustomAspectRatio(customAspectRatio.toDouble(), showUpdate)
+      setCustomAspectRatio(customAspectRatio.toDouble(), showUpdate, resetZoom = false)
       return
     }
 
-    changeVideoAspect(playerPreferences.lastVideoAspect.get(), showUpdate)
+    changeVideoAspect(playerPreferences.lastVideoAspect.get(), showUpdate, resetZoom = false)
   }
 
   fun setAutoCropBlackBars(enabled: Boolean) {
@@ -6180,7 +6250,7 @@ val isBrightnessSliderShown = MutableStateFlow(false)
   private fun refreshStretchAspectAfterCropChange() {
     if (playerPreferences.lastCustomAspectRatio.get() > 0f) return
     if (playerPreferences.lastVideoAspect.get() != VideoAspect.Stretch) return
-    changeVideoAspect(VideoAspect.Stretch, showUpdate = false)
+    changeVideoAspect(VideoAspect.Stretch, showUpdate = false, resetZoom = false)
   }
 
   // ==================== Screen Rotation ====================
@@ -6301,51 +6371,10 @@ val isBrightnessSliderShown = MutableStateFlow(false)
 
   // ==================== Gesture Handling ====================
 
-  fun handleLeftDoubleTap() {
-    when (gesturePreferences.leftSingleActionGesture.get()) {
-      SingleActionGesture.Seek -> leftSeek()
-      SingleActionGesture.PlayPause -> pauseUnpause()
-      SingleActionGesture.Custom ->
-        viewModelScope.launch(Dispatchers.IO) {
-          PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapLeft.keyCode)
-        }
-      SingleActionGesture.None -> {}
-    }
-  }
-
-  fun handleCenterDoubleTap() {
-    when (gesturePreferences.centerSingleActionGesture.get()) {
-      SingleActionGesture.PlayPause -> pauseUnpause()
-      SingleActionGesture.Custom ->
-        viewModelScope.launch(Dispatchers.IO) {
-          PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapCenter.keyCode)
-        }
-      SingleActionGesture.Seek, SingleActionGesture.None -> {}
-    }
-  }
-
-  fun handleCenterSingleTap() {
-    when (gesturePreferences.centerSingleActionGesture.get()) {
-      SingleActionGesture.PlayPause -> pauseUnpause()
-      SingleActionGesture.Custom ->
-        viewModelScope.launch(Dispatchers.IO) {
-          PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapCenter.keyCode)
-        }
-      SingleActionGesture.Seek, SingleActionGesture.None -> {}
-    }
-  }
-
-  fun handleRightDoubleTap() {
-    when (gesturePreferences.rightSingleActionGesture.get()) {
-      SingleActionGesture.Seek -> rightSeek()
-      SingleActionGesture.PlayPause -> pauseUnpause()
-      SingleActionGesture.Custom ->
-        viewModelScope.launch(Dispatchers.IO) {
-          PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapRight.keyCode)
-        }
-      SingleActionGesture.None -> {}
-    }
-  }
+  fun handleLeftDoubleTap() = handleLeftTap()
+  fun handleRightDoubleTap() = handleRightTap()
+  fun handleCenterDoubleTap() = handleCenterTap()
+  fun handleCenterSingleTap() = handleCenterTap()
 
   fun handleLeftSingleTap() {
     when (gesturePreferences.leftSingleTapGesture.get()) {
@@ -6434,6 +6463,42 @@ val isBrightnessSliderShown = MutableStateFlow(false)
       if (playerUpdate.value is PlayerUpdates.ShowText && (playerUpdate.value as PlayerUpdates.ShowText).value == msg) {
         playerUpdate.value = PlayerUpdates.None
       }
+    }
+  }
+
+
+  fun handleLeftTap() {
+    when (gesturePreferences.leftSingleActionGesture.get()) {
+      SingleActionGesture.Seek -> leftSeek()
+      SingleActionGesture.PlayPause -> pauseUnpause()
+      SingleActionGesture.Custom ->
+        viewModelScope.launch(Dispatchers.IO) {
+          PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapLeft.keyCode)
+        }
+      SingleActionGesture.None -> {}
+    }
+  }
+
+  fun handleCenterTap() {
+    when (gesturePreferences.centerSingleActionGesture.get()) {
+      SingleActionGesture.PlayPause -> pauseUnpause()
+      SingleActionGesture.Custom ->
+        viewModelScope.launch(Dispatchers.IO) {
+          PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapCenter.keyCode)
+        }
+      SingleActionGesture.Seek, SingleActionGesture.None -> {}
+    }
+  }
+
+  fun handleRightTap() {
+    when (gesturePreferences.rightSingleActionGesture.get()) {
+      SingleActionGesture.Seek -> rightSeek()
+      SingleActionGesture.PlayPause -> pauseUnpause()
+      SingleActionGesture.Custom ->
+        viewModelScope.launch(Dispatchers.IO) {
+          PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapRight.keyCode)
+        }
+      SingleActionGesture.None -> {}
     }
   }
 
@@ -6613,7 +6678,7 @@ val isBrightnessSliderShown = MutableStateFlow(false)
       }
 
     if (!finished) {
-      seekPreviewTo(targetPosition.toFloat())
+      scheduleSeekPreview(targetPosition.toFloat(), framePreview = true)
       return
     }
 
@@ -6622,8 +6687,7 @@ val isBrightnessSliderShown = MutableStateFlow(false)
     frameSeekJob =
       viewModelScope.launch(Dispatchers.IO) {
         if (!PlaybackSession.isCurrentGeneration(generation)) return@launch
-        seekCoalesceJob?.cancel()
-        pendingSeekOffset = 0
+        cancelPendingRelativeSeek()
         if (PlaybackSession.getPropertyBoolean("pause") != true) {
           PlaybackSession.setPropertyBoolean("pause", true)
           withContext(Dispatchers.Main) { host?.abandonAudioFocus() }
@@ -6886,6 +6950,7 @@ val isBrightnessSliderShown = MutableStateFlow(false)
         tvgLogo = book?.book?.coverUri ?: item.artworkUri.orEmpty(),
         networkConnectionId = item.networkSource?.connectionId,
         networkPath = item.networkSource?.relativePath.orEmpty(),
+        queueEntryId = item.queueEntryId,
       )
     }
   }

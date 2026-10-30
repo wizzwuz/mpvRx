@@ -35,6 +35,13 @@ enum class IntroSegmentProvider(
   SKIP_DB("SkipDB", "skipdb"),
 }
 
+/** Slot content for the optional always-visible in-video status HUD. */
+enum class PersistentStatusSlot {
+  None, PlaybackProgress, CurrentTime, BatteryStatus,
+}
+
+enum class PersistentStatusPosition { Top, Bottom }
+
 enum class PlayerClockFormat(
   val displayName: String,
 ) {
@@ -87,10 +94,19 @@ class PlayerPreferences(
 
   val allowGesturesInPanels = preferenceStore.getBoolean("allow_gestures_in_panels")
   val showControlsDrawer = preferenceStore.getBoolean("show_controls_drawer", true)
+  // This HUD is drawn over video, independently of the Android system status bar.
+  val persistentStatusEnabled = preferenceStore.getBoolean("persistent_status_enabled", false)
+  val persistentStatusPosition = preferenceStore.getEnum("persistent_status_position", PersistentStatusPosition.Top)
+  val persistentStatusLeftSlot = preferenceStore.getEnum("persistent_status_left_slot", PersistentStatusSlot.CurrentTime)
+  val persistentStatusCenterSlot = preferenceStore.getEnum("persistent_status_center_slot", PersistentStatusSlot.BatteryStatus)
+  val persistentStatusRightSlot = preferenceStore.getEnum("persistent_status_right_slot", PersistentStatusSlot.PlaybackProgress)
+  val persistentStatusPreferFinishTime = preferenceStore.getBoolean("persistent_status_prefer_finish_time", true)
+  val persistentStatusShowSpeed = preferenceStore.getBoolean("persistent_status_show_speed", true)
+  val persistentStatusMicroBattery = preferenceStore.getBoolean("persistent_status_micro_battery", true)
   val showSystemStatusBar = preferenceStore.getBoolean("show_system_status_bar")
   val showSystemNavigationBar = preferenceStore.getBoolean("show_system_navigation_bar")
   val safeAreaWindow = preferenceStore.getBoolean("safe_area_window", false)
-  val reduceMotion = preferenceStore.getBoolean("reduce_motion", true)
+  val reduceMotion = preferenceStore.getBoolean("reduce_motion", false)
   val playerTimeToDisappear = preferenceStore.getInt("player_time_to_disappear", 4000)
   val clockFormat = preferenceStore.getEnum("player_clock_format", PlayerClockFormat.SYSTEM)
 
@@ -100,10 +116,10 @@ class PlayerPreferences(
   val defaultVideoPanX = preferenceStore.getFloat("default_video_pan_x", 0f)
   val defaultVideoPanY = preferenceStore.getFloat("default_video_pan_y", 0f)
   val rememberVideoZoom = preferenceStore.getBoolean("remember_video_zoom", true)
-  val panAndZoomEnabled = preferenceStore.getBoolean("pan_and_zoom_enabled", false)
   val advancedZoomEnabled = preferenceStore.getBoolean("advanced_zoom_enabled", false)
   val defaultVideoScaleX = preferenceStore.getFloat("default_video_scale_x", 1f)
   val defaultVideoScaleY = preferenceStore.getFloat("default_video_scale_y", 1f)
+  val panAndZoomEnabled = preferenceStore.getBoolean("pan_and_zoom_enabled", false)
 
   val includeSubtitlesInSnapshot = preferenceStore.getBoolean("include_subtitles_in_snapshot", false)
 
@@ -157,7 +173,7 @@ class PlayerPreferences(
   val enableVideoMiniPlayer = DependentBooleanPreference(storedEnableVideoMiniPlayer, videoBackgroundPlayback)
 
   val keepScreenOnWhenPaused = preferenceStore.getBoolean("keep_screen_on_when_paused", false)
-  val externalDisplayProjection = preferenceStore.getBoolean("external_display_projection", true)
+  val externalDisplayProjection = preferenceStore.getBoolean("external_display_projection", false)
   val autoplayAfterScreenUnlock = preferenceStore.getBoolean("autoplay_after_screen_unlock", false)
   val enableMediaInfoIntent = preferenceStore.getBoolean("enable_mediainfo_intent", true)
   val enableWebStreamLinkIntents = preferenceStore.getBoolean("enable_web_stream_link_intents", true)

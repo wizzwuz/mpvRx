@@ -57,12 +57,14 @@ import app.gyrolet.mpvrx.ui.icons.Icon
 import app.gyrolet.mpvrx.ui.icons.Icons
 import app.gyrolet.mpvrx.ui.player.Debanding
 import app.gyrolet.mpvrx.ui.player.MPVProfile
+import app.gyrolet.mpvrx.ui.player.PlaybackSession
+import app.gyrolet.mpvrx.ui.player.RendererBackendPolicy
 import app.gyrolet.mpvrx.ui.preferences.components.SwitchPreference
 import app.gyrolet.mpvrx.ui.utils.LocalBackStack
 import app.gyrolet.mpvrx.ui.utils.popSafely
 import app.gyrolet.mpvrx.utils.device.VulkanCapabilities
 import kotlinx.serialization.Serializable
-import me.zhanghai.compose.preference.ListPreference
+import app.gyrolet.mpvrx.ui.preferences.components.AppListPreference as ListPreference
 import org.koin.compose.koinInject
 
 @Serializable
@@ -71,6 +73,7 @@ object DecoderPreferencesScreen : Screen {
   @Composable
   override fun Content() {
     val preferences = koinInject<DecoderPreferences>()
+    val embeddedInPlayer = LocalPlayerSettingsPanel.current
     val advancedPreferences = koinInject<AdvancedPreferences>()
     val storedConfigOverrides by advancedPreferences.mpvConfOverrides.collectAsState()
     val configOwnedOptions =
@@ -90,6 +93,7 @@ object DecoderPreferencesScreen : Screen {
     var showGpuNextWarning by remember { mutableStateOf(false) }
     var anime4kExpanded by remember { mutableStateOf(false) }
     Scaffold(
+      contentWindowInsets = settingsContentWindowInsets(),
       topBar = {
         SettingsTopAppBar(
           title = stringResource(R.string.pref_decoder),
@@ -108,7 +112,7 @@ object DecoderPreferencesScreen : Screen {
               .padding(padding)
               .then(settingsHighlight),
         ) {
-          item {
+          if (!embeddedInPlayer) item {
             PreferenceSectionHeader(position = PreferenceSectionPosition.Single, 
               title = stringResource(R.string.pref_decoder),
               modifier = Modifier.settingsSearchTarget(R.string.pref_decoder),
@@ -145,6 +149,18 @@ object DecoderPreferencesScreen : Screen {
                 enabled = !decoderConfigOwned,
                 onValueChange = {
                   preferences.tryHWDecoding.set(it)
+                  if (embeddedInPlayer) {
+                    val usesVulkan =
+                      PlaybackSession.getPropertyString("gpu-api") == "vulkan" || preferences.useVulkan.get()
+                    PlaybackSession.setPropertyString(
+                      "hwdec",
+                      RendererBackendPolicy.preferredHwdecMode(
+                        hardwareDecodingEnabled = it,
+                        usesVulkan = usesVulkan,
+                        buildSupportsMediaCodecVulkan = BuildConfig.MPV_SUPPORTS_MEDIACODEC_VULKAN,
+                      ),
+                    )
+                  }
                 },
                 title = { Text(stringResource(R.string.pref_decoder_try_hw_dec_title)) },
               )
@@ -270,7 +286,10 @@ object DecoderPreferencesScreen : Screen {
               ListPreference(
                 modifier = Modifier.settingsSearchTarget(R.string.pref_decoder_debanding_title),
                 value = debanding,
-                onValueChange = { preferences.debanding.set(it) },
+                onValueChange = {
+                  preferences.debanding.set(it)
+                  if (embeddedInPlayer) PlaybackSession.applyDebanding(it)
+                },
                 values = Debanding.entries,
                 enabled = !debandingConfigOwned,
                 title = { Text(stringResource(R.string.pref_decoder_debanding_title)) },
@@ -342,7 +361,7 @@ object DecoderPreferencesScreen : Screen {
                 },
               )
 
-              if (enableAnime4K && !shadersConfigOwned) {
+              if (!embeddedInPlayer && enableAnime4K && !shadersConfigOwned) {
                 val rotationState by animateFloatAsState(
                   targetValue = if (anime4kExpanded) 180f else 0f,
                   label = "anime4k_chevron_rotation",
@@ -389,6 +408,7 @@ object DecoderPreferencesScreen : Screen {
                       Column {
                         val anime4kIn4k by preferences.anime4kIn4k.collectAsState()
                         SwitchPreference(
+                          modifier = Modifier.settingsSearchTarget(R.string.pref_anime4k_in_4k_title),
                           value = anime4kIn4k,
                           onValueChange = { preferences.anime4kIn4k.set(it) },
                           title = { Text(stringResource(R.string.pref_anime4k_in_4k_title)) },
@@ -405,6 +425,7 @@ object DecoderPreferencesScreen : Screen {
                         val anime4kQuality by preferences.anime4kQuality.collectAsState()
                         ExpressivePreferenceItem {
                         ListPreference(
+                          modifier = Modifier.settingsSearchTarget(R.string.pref_anime4k_quality_title),
                           value = anime4kQuality,
                           onValueChange = { preferences.anime4kQuality.set(it) },
                           values = Anime4KManager.Quality.entries,
@@ -423,6 +444,7 @@ object DecoderPreferencesScreen : Screen {
 
                         val anime4kDarken by preferences.anime4kDarken.collectAsState()
                         SwitchPreference(
+                          modifier = Modifier.settingsSearchTarget(R.string.pref_anime4k_darken_title),
                           value = anime4kDarken,
                           onValueChange = { preferences.anime4kDarken.set(it) },
                           title = { Text(stringResource(R.string.pref_anime4k_darken_title)) },
@@ -438,6 +460,7 @@ object DecoderPreferencesScreen : Screen {
 
                         val anime4kThin by preferences.anime4kThin.collectAsState()
                         SwitchPreference(
+                          modifier = Modifier.settingsSearchTarget(R.string.pref_anime4k_thin_title),
                           value = anime4kThin,
                           onValueChange = { preferences.anime4kThin.set(it) },
                           title = { Text(stringResource(R.string.pref_anime4k_thin_title)) },
@@ -453,6 +476,7 @@ object DecoderPreferencesScreen : Screen {
 
                         val anime4kDeblur by preferences.anime4kDeblur.collectAsState()
                         SwitchPreference(
+                          modifier = Modifier.settingsSearchTarget(R.string.pref_anime4k_deblur_title),
                           value = anime4kDeblur,
                           onValueChange = { preferences.anime4kDeblur.set(it) },
                           title = { Text(stringResource(R.string.pref_anime4k_deblur_title)) },
