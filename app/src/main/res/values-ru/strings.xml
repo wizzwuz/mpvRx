@@ -2896,7 +2896,6 @@
   <string name="pref_measure_enabled_title">Отправлять диагностику в Measure</string>
   <string name="pref_measure_enabled_summary">Разрешить отправку сбоев, ANR, показателей производительности и действий сеанса в Measure. По умолчанию отключено.</string>
   <string name="pref_measure_not_configured">Диагностика недоступна: в сборке нет ключа API Measure.</string>
-<<<<<<< HEAD
 
   <!-- Custom fork strings (gestures, zoom, right panel) -->
   <string name="pref_appearance_hide_player_buttons_background_title">Скрыть фон кнопок проигрывателя</string>

@@ -128,16 +128,12 @@ fun GestureHandler(
 
   val panelShown by viewModel.panelShown.collectAsState()
   val anyPanelShown = panelShown != Panels.None || externalPanelShown
-<<<<<<< HEAD
-  val allowGesturesInPanels by playerPreferences.allowGesturesInPanels.collectAsState()
-=======
   val allowPanelGesturesPreference by playerPreferences.allowGesturesInPanels.collectAsState()
   val settingsPanelShown = panelShown == Panels.PlayerSettings
   val allowGesturesInPanels = allowPanelGesturesPreference && !settingsPanelShown
   val playlistSwipeBlocked by rememberUpdatedState(anyPanelShown && !allowGesturesInPanels)
   val currentExternalPanelShown by rememberUpdatedState(externalPanelShown)
   val currentOnDismissExternalPanel by rememberUpdatedState(onDismissExternalPanel)
->>>>>>> upstream/master
   val paused by PlaybackSession.propBoolean["pause"].collectAsState()
   val duration by PlaybackSession.propInt["duration"].collectAsState()
   val position by PlaybackSession.propInt["time-pos"].collectAsState()
@@ -155,7 +151,6 @@ fun GestureHandler(
   val secondarySubPinchZoomEnabled by subtitlesPreferences.secondarySubPinchZoom.collectAsState()
   val swipeSubtitlesToSeekDialog by gesturePreferences.swipeSubtitlesToSeekDialog.collectAsState()
   val isSwipeSubtitlesInverted by gesturePreferences.swipeSubtitlesInvertDirection.collectAsState()
-<<<<<<< HEAD
   // Isolated double-tap and single-tap state tracking
   var tapCount by remember { mutableStateOf(0) }
   var lastTapTime by remember { mutableStateOf(0L) }
@@ -191,12 +186,6 @@ fun GestureHandler(
       viewModel.hideSeekBar()
     }
   }
-=======
-  var isTapSeeking by remember { mutableStateOf(false) }
-  var seekFeedbackBurst by remember { mutableStateOf<TapSeekFeedback?>(null) }
-  var seekFeedbackRevision by remember { mutableStateOf(0L) }
-  var tapInProgress by remember { mutableStateOf(false) }
->>>>>>> upstream/master
   val multipleSpeedGesture by playerPreferences.holdForMultipleSpeed.collectAsState()
   val brightnessGesture by playerPreferences.brightnessGesture.collectAsState()
   val volumeGesture by playerPreferences.volumeGesture.collectAsState()
