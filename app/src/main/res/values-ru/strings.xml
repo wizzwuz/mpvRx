@@ -2967,4 +2967,6 @@
   <string name="pref_layout_playback_center">По центру экрана</string>
   <string name="pref_layout_playback_above_seekbar">Над шкалой воспроизведения</string>
   <string name="pref_layout_playback_below_seekbar">Под шкалой воспроизведения</string>
+  <string name="delete_confirmation_message">Вы действительно хотите удалить это видео? Это действие невозможно отменить.</string>
+  <string name="media_info_no_file_provided">Локальный файл для информации о медиа недоступен</string>
 </resources>

@@ -307,6 +307,12 @@ class PlayerViewModel(
   private val _isSearchingSub = MutableStateFlow(false)
   val isSearchingSub: StateFlow<Boolean> = _isSearchingSub.asStateFlow()
 
+  val showDeleteConfirmation = MutableStateFlow(false)
+
+  fun requestDeleteCurrentVideo() {
+    showDeleteConfirmation.value = true
+  }
+
   private val _isOnlineSectionExpanded = MutableStateFlow(true)
   val isOnlineSectionExpanded: StateFlow<Boolean> = _isOnlineSectionExpanded.asStateFlow()
 

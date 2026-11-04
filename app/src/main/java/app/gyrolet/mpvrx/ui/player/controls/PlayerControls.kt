@@ -131,6 +131,8 @@ import androidx.constraintlayout.compose.ConstrainScope
 import androidx.constraintlayout.compose.ConstraintLayout
 import androidx.constraintlayout.compose.Dimension
 import app.gyrolet.mpvrx.R
+import app.gyrolet.mpvrx.presentation.components.ConfirmDialog
+import app.gyrolet.mpvrx.ui.player.PlayerActivity
 import app.gyrolet.mpvrx.ui.components.SwipeDismissibleToast
 import app.gyrolet.mpvrx.preferences.AdvancedPreferences
 import app.gyrolet.mpvrx.preferences.AiPreferences
@@ -368,6 +370,23 @@ internal fun AudioPlayerScreen(
         onDismissRequest = { onOpenPanel(Panels.None) },
       )
     }
+
+    val showDeleteConfirmation by viewModel.showDeleteConfirmation.collectAsState()
+    if (showDeleteConfirmation) {
+      val activity = LocalContext.current as? PlayerActivity
+      ConfirmDialog(
+        title = stringResource(R.string.delete),
+        subtitle = stringResource(R.string.delete_confirmation_message),
+        confirmText = stringResource(R.string.delete),
+        onConfirm = {
+          viewModel.showDeleteConfirmation.value = false
+          activity?.deleteCurrentlyPlayingVideo()
+        },
+        onCancel = {
+          viewModel.showDeleteConfirmation.value = false
+        },
+      )
+    }
   }
 }
 
@@ -387,6 +406,22 @@ fun PlayerControls(
 ) {
   val spacing = MaterialTheme.spacing
   val isTelevision = DeviceFormFactor.isTelevision(LocalContext.current)
+  val showDeleteConfirmation by viewModel.showDeleteConfirmation.collectAsState()
+  if (showDeleteConfirmation) {
+    val activity = LocalContext.current as? PlayerActivity
+    ConfirmDialog(
+      title = stringResource(R.string.delete),
+      subtitle = stringResource(R.string.delete_confirmation_message),
+      confirmText = stringResource(R.string.delete),
+      onConfirm = {
+        viewModel.showDeleteConfirmation.value = false
+        activity?.deleteCurrentlyPlayingVideo()
+      },
+      onCancel = {
+        viewModel.showDeleteConfirmation.value = false
+      },
+    )
+  }
   val advancedPreferences = koinInject<AdvancedPreferences>()
   val appearancePreferences = koinInject<AppearancePreferences>()
   val aiPreferences = koinInject<AiPreferences>()

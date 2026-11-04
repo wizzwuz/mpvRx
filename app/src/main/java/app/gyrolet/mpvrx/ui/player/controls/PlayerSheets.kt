@@ -454,6 +454,14 @@ fun PlayerSheets(
         onEnterSettingsPanel =
           if (!isTelevision && !isAudioOnly) ({ onOpenPanel(Panels.PlayerSettings) }) else null,
         onEnterEqualizerSheet = { onShowSheet(Sheets.Equalizer) },
+        onOpenMediaInfo = {
+          (context as? app.gyrolet.mpvrx.ui.player.PlayerActivity)?.openMediaInfo()
+          onDismissRequest()
+        },
+        onDeleteCurrentVideo = {
+          viewModel.requestDeleteCurrentVideo()
+          onDismissRequest()
+        },
         anime4KUiState = anime4KUiState,
         onAnime4KModeSelected = viewModel::selectAnime4KMode,
         filtersEnabled = MpvConfigOverride.VIDEO_FILTERS.optionNames.any { it !in configOwnedOptions },
