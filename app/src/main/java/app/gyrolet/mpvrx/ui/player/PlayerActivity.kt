@@ -9147,7 +9147,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
 
       if (isDeleted || resolvedPath.isNotBlank()) {
         if (resolvedPath.isNotBlank()) {
-          app.gyrolet.mpvrx.utils.media.RecentlyPlayedOps.onVideoDeleted(resolvedPath)
+          RecentlyPlayedOps.onVideoDeleted(resolvedPath)
           app.gyrolet.mpvrx.utils.media.PlaybackStateOps.onVideoDeleted(resolvedPath)
           runCatching {
             android.media.MediaScannerConnection.scanFile(this@PlayerActivity, arrayOf(resolvedPath), null, null)

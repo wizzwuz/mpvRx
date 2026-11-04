@@ -54,7 +54,10 @@ import app.gyrolet.mpvrx.ui.player.findSubtitleGestureTarget
 import app.gyrolet.mpvrx.ui.player.draggedSubtitlePosition
 import app.gyrolet.mpvrx.ui.player.getTrackSelectionId
 import app.gyrolet.mpvrx.ui.player.isSecondarySubtitleActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
@@ -97,6 +100,9 @@ fun GestureHandler(
   val gesturePreferences = koinInject<GesturePreferences>()
   val subtitlesPreferences = koinInject<SubtitlesPreferences>()
   val context = LocalContext.current
+  val mediaGeneration by remember {
+    PlaybackSession.state.map { it.generation }.distinctUntilChanged()
+  }.collectAsState(initial = PlaybackSession.state.value.generation)
   val currentOnLockedTouchSideChanged by rememberUpdatedState(onLockedTouchSideChanged)
   val currentOnSeekRipple by rememberUpdatedState(onSeekRipple)
   val subtitleTracks by viewModel.subtitleTracks.collectAsState(emptyList())
@@ -1666,9 +1672,6 @@ fun GestureHandler(
                         viewModel.gestureSeekTo(clampedPosition)
                         pendingSeekPosition = clampedPosition
 
-                        // Keep the live preview bounded and keyframe-only while scrubbing. The final
-                        // exact seek is issued once on gesture release below.
-                        viewModel.seekPreviewTo(clampedPosition)
                         // Format and display time position updates
                         val currentPos = clampedPosition.toInt()
                         val seekDelta = (clampedPosition - initialVideoPosition).toInt()
@@ -1713,13 +1716,6 @@ fun GestureHandler(
             }
 
             if (hasStartedSeeking) {
-              // Finalize with the last bounded preview target; seekTo cancels any pending preview.
-              pendingSeekPosition?.let { viewModel.seekTo(it.toInt()) }
-
-              // Only the scrub seek paused playback; a subtitle swipe must leave it as it was.
-              if (gestureType == "horizontal_seek" && !wasPlayerAlreadyPaused) {
-                viewModel.unpause()
-              }
               // Keep the chip visible briefly after the gesture settles.
               coroutineScope.launch {
                 delay(300)
