@@ -122,6 +122,7 @@ fun PlayerSheet(
   title: String? = null,
   actions: @Composable RowScope.() -> Unit = {},
   useFrostedGlass: Boolean = true,
+  scrimAlpha: Float = 0.5f,
   bottomBar: (@Composable () -> Unit)? = null,
   content: @Composable () -> Unit,
 ) {
@@ -186,6 +187,7 @@ fun PlayerSheet(
     } else {
       screenWidthPx
     }
+
 
   val internalOnDismissRequest: () -> Unit = {
     scope.launch {

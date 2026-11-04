@@ -110,14 +110,14 @@ fun TopPlayerControlsPortrait(
                   mediaTitle ?: "",
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
-                  style = MaterialTheme.typography.bodyMedium,
+                  style = MaterialTheme.typography.titleMedium,
                   modifier = Modifier.weight(1f, fill = false),
                 )
                 viewModel.getPlaylistInfo()?.let { playlistInfo ->
                   Text(
                     " • $playlistInfo",
                     maxLines = 1,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = LocalContentColor.current.copy(alpha = 0.7f),
                   )
                 }
@@ -149,14 +149,14 @@ fun TopPlayerControlsPortrait(
                     mediaTitle ?: "",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f, fill = false),
                   )
                   viewModel.getPlaylistInfo()?.let { playlistInfo ->
                     Text(
                       " • $playlistInfo",
                       maxLines = 1,
-                      style = MaterialTheme.typography.bodySmall,
+                      style = MaterialTheme.typography.bodyMedium,
                       color = LocalContentColor.current.copy(alpha = 0.7f),
                     )
                   }
@@ -257,7 +257,7 @@ fun BottomPlayerControlsPortrait(
   alignToEnd: Boolean = false,
   horizontalArrangement: Arrangement.Horizontal =
     Arrangement.spacedBy(
-      MaterialTheme.spacing.medium,
+      MaterialTheme.spacing.small,
       Alignment.CenterHorizontally,
     ),
 ) {
@@ -272,7 +272,7 @@ fun BottomPlayerControlsPortrait(
           // Vertical room is only for the liquid-glass shadow; the player places this row with its shared gaps.
           .padding(
             horizontal = if (enableLiquidGlass) 8.dp else 0.dp,
-            vertical = if (enableLiquidGlass) 6.dp else 0.dp,
+            vertical = if (enableLiquidGlass) PortraitActionShadowRoom else 0.dp,
           ),
       horizontalArrangement = horizontalArrangement,
       verticalAlignment = Alignment.CenterVertically,

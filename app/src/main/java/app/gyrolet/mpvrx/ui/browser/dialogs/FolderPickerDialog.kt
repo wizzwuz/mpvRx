@@ -9,8 +9,11 @@
 
 package app.gyrolet.mpvrx.ui.browser.dialogs
 
+import android.net.Uri
 import android.os.Environment
+import android.provider.DocumentsContract
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,6 +26,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import app.gyrolet.mpvrx.presentation.components.AppAlertDialog as AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalIconButton
@@ -37,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -50,8 +55,13 @@ import app.gyrolet.mpvrx.presentation.components.AppPickerSheet
 import app.gyrolet.mpvrx.presentation.components.PlayerSheetSearchField
 import app.gyrolet.mpvrx.ui.icons.Icon
 import app.gyrolet.mpvrx.ui.icons.Icons
+import app.gyrolet.mpvrx.ui.tv.canLaunch
+import app.gyrolet.mpvrx.utils.device.DeviceFormFactor
+import app.gyrolet.mpvrx.utils.media.OpenDocumentTreeContract
 import app.gyrolet.mpvrx.utils.storage.StorageVolumeUtils
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -65,6 +75,12 @@ fun FolderPickerDialog(
   if (!isOpen) return
 
   val context = LocalContext.current
+  // TVs choose with the system folder picker; this list is the fallback when they have none.
+  var useSystemPicker by rememberSaveable { mutableStateOf(DeviceFormFactor.isTelevision(context)) }
+  if (useSystemPicker) {
+    SystemFolderPicker(onDismiss, onFolderSelected, onUnavailable = { useSystemPicker = false })
+    return
+  }
 
   // Get all available storage volumes
   val storageVolumes =
@@ -98,22 +114,19 @@ fun FolderPickerDialog(
     query = ""
   }
 
-  val folders =
-    remember(selectedPath, query) {
-      if (showStorageRoot) {
-        // Show storage volumes as "folders"
-        emptyList<File>()
-      } else {
-        runCatching {
-          currentDir?.listFiles { file ->
-            file.isDirectory && !file.name.startsWith(".") &&
-              (query.isBlank() || file.name.contains(query, ignoreCase = true))
-          }
-        }.getOrNull()
-          ?.sortedBy { it.name.lowercase() }
-          ?: emptyList()
-      }
+  val listing by produceState<FolderPickerListing?>(null, selectedPath) {
+    val path = selectedPath
+    value = withContext(Dispatchers.IO) {
+      val directories = runCatching {
+        path?.let { File(it).listFiles { file -> file.isDirectory && !file.name.startsWith(".") } }
+      }.getOrNull().orEmpty().distinctBy { it.absolutePath }.sortedBy { it.name.lowercase() }
+      FolderPickerListing(path, directories)
     }
+  }
+  val currentListing = listing?.takeIf { it.path == selectedPath }
+  val folders = remember(currentListing, query) {
+    currentListing?.folders.orEmpty().filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }
+  }
 
   // Check if selected path is the same as current path
   val isSameAsSource =
@@ -260,7 +273,7 @@ fun FolderPickerDialog(
         ) {
           if (showStorageRoot) {
             // Show storage volumes
-            items(storageVolumes, key = { StorageVolumeUtils.getVolumePath(it) ?: it.toString() }) { volume ->
+            items(storageVolumes, key = { "volume:${StorageVolumeUtils.getVolumePath(it) ?: it.toString()}" }) { volume ->
               val volumePath = StorageVolumeUtils.getVolumePath(volume)
               if (volumePath != null) {
                 StorageVolumeItem(
@@ -287,32 +300,30 @@ fun FolderPickerDialog(
             }
           } else {
             // Show folders
-            items(folders, key = { it.absolutePath }) { folder ->
+            items(folders, key = { "folder:${it.absolutePath}" }) { folder ->
               FolderItem(
                 folder = folder,
                 onClick = { selectedPath = folder.absolutePath },
               )
             }
 
-            if (folders.isEmpty()) {
+            if (currentListing == null) {
+              item(key = "loading") {
+                CircularProgressIndicator(modifier = Modifier.padding(16.dp).size(24.dp))
+              }
+            } else if (folders.isEmpty()) {
               item {
                 Text(
                   text =
                     androidx.compose.ui.res
-                      .stringResource(app.gyrolet.mpvrx.R.string.ui_no_subfolders),
+                      .stringResource(
+                        if (query.isBlank()) app.gyrolet.mpvrx.R.string.ui_no_subfolders
+                        else app.gyrolet.mpvrx.R.string.generic_no_matching_options,
+                      ),
                   style = MaterialTheme.typography.bodyLarge,
                   fontWeight = FontWeight.Medium,
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                   modifier = Modifier.padding(16.dp),
-                )
-              }
-            }
-            if (folders.isEmpty() && query.isNotBlank()) {
-              item {
-                Text(
-                  text = androidx.compose.ui.res.stringResource(app.gyrolet.mpvrx.R.string.generic_no_matching_options),
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
-                  modifier = Modifier.fillMaxWidth().padding(16.dp),
                 )
               }
             }
@@ -462,4 +473,40 @@ private fun CreateFolderDialog(
     tonalElevation = 6.dp,
     shape = MaterialTheme.shapes.extraLarge,
   )
+}
+
+private data class FolderPickerListing(val path: String?, val folders: List<File>)
+
+/** Opens the system folder picker once and hands back the storage path of the chosen folder. */
+@Composable
+private fun SystemFolderPicker(
+  onDismiss: () -> Unit,
+  onFolderSelected: (String) -> Unit,
+  onUnavailable: () -> Unit,
+) {
+  val context = LocalContext.current
+  val picker =
+    rememberLauncherForActivityResult(OpenDocumentTreeContract()) { uri ->
+      if (uri == null) return@rememberLauncherForActivityResult onDismiss()
+      val folder = treeDirectory(uri)
+      // Cloud and virtual roots have no storage path to copy into; mpvRx's list stays available.
+      if (folder != null) onFolderSelected(folder.absolutePath) else onUnavailable()
+    }
+  var launched by rememberSaveable { mutableStateOf(false) }
+  LaunchedEffect(Unit) {
+    if (launched) return@LaunchedEffect
+    launched = true
+    if (picker.canLaunch(context, null)) picker.launch(null) else onUnavailable()
+  }
+}
+
+/** Storage path behind an external-storage tree; null for cloud and virtual roots. */
+private fun treeDirectory(uri: Uri): File? {
+  if (uri.authority != "com.android.externalstorage.documents") return null
+  return runCatching {
+    val documentId = DocumentsContract.getTreeDocumentId(uri)
+    val volume = documentId.substringBefore(':')
+    val root = if (volume == "primary") Environment.getExternalStorageDirectory() else File("/storage", volume)
+    File(root, documentId.substringAfter(':', "")).takeIf(File::isDirectory)
+  }.getOrNull()
 }

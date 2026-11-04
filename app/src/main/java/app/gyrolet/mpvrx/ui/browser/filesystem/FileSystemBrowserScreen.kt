@@ -1459,12 +1459,12 @@ private fun FileSystemBrowserContent(
     ) {
       VideoCardUiConfig(
         unlimitedNameLines = unlimitedNameLines,
-        showThumbnails = showVideoThumbnails && !archiveMode,
+        showThumbnails = showVideoThumbnails,
         showSizeChip = showSizeChip,
         showResolutionChip = showResolutionChip && !archiveMode,
         showFramerateInResolution = showFramerateInResolution && !archiveMode,
         showCodecSupportIndicator = showCodecSupportIndicator && !archiveMode,
-        showProgressBar = showProgressBar && !archiveMode,
+        showProgressBar = showProgressBar,
         showDateChip = showDateChip,
         showUnplayedOldVideoLabel = showUnplayedOldVideoLabel,
         unplayedOldVideoDays = unplayedOldVideoDays,
@@ -1478,12 +1478,12 @@ private fun FileSystemBrowserContent(
       )
     }
 
-  // ZIP entries carry no probed metadata or thumbnails; suppress fields that would stay empty.
+  // ZIP entries support thumbnails, but folder totals have no probed duration.
   val baseFolderCardUiConfig = rememberFolderCardUiConfig()
   val folderCardUiConfig =
     remember(baseFolderCardUiConfig, archiveMode) {
       if (archiveMode) {
-        baseFolderCardUiConfig.copy(showTotalDurationChip = false, showFolderThumbnails = false)
+        baseFolderCardUiConfig.copy(showTotalDurationChip = false)
       } else {
         baseFolderCardUiConfig
       }
@@ -1671,7 +1671,7 @@ private fun FileSystemBrowserContent(
                     customIcon = if (ZipArchiveMedia.isArchiveRoot(folder.path)) Icons.RoundedFilled.FolderZip else null,
                     newVideoCount = folder.newCount,
                     isGridMode = true,
-                    allowThumbnailGeneration = false,
+                    allowThumbnailGeneration = archiveFolder && isOpenedFolder,
                   )
                 }
 
@@ -1708,8 +1708,7 @@ private fun FileSystemBrowserContent(
                       overrideShowSizeChip = null,
                       overrideShowResolutionChip = null,
                       useFolderNameStyle = false,
-                      allowThumbnailGeneration = !archiveEntry && isOpenedFolder,
-                      allowThumbnailLoading = !archiveEntry,
+                      allowThumbnailGeneration = isOpenedFolder,
                       uiConfig = videoCardUiConfig,
                   )
                 }
@@ -1798,7 +1797,7 @@ private fun FileSystemBrowserContent(
                     },
                   newVideoCount = folder.newCount,
                   isGridMode = false,
-                  allowThumbnailGeneration = false,
+                  allowThumbnailGeneration = archiveFolder && isOpenedFolder,
                   customIcon = if (ZipArchiveMedia.isArchiveRoot(folder.path)) Icons.RoundedFilled.FolderZip else null,
                   onSwipeAction =
                     swipeActions.folder.takeUnless { archiveFolder || selectionManager.isInSelectionMode || isInSelectionMode },
@@ -1839,8 +1838,7 @@ private fun FileSystemBrowserContent(
                     overrideShowSizeChip = null,
                     overrideShowResolutionChip = null,
                     useFolderNameStyle = false,
-                    allowThumbnailGeneration = !archiveEntry && isOpenedFolder,
-                    allowThumbnailLoading = !archiveEntry,
+                    allowThumbnailGeneration = isOpenedFolder,
                     uiConfig = videoCardUiConfig,
                     thumbnailWidthPx = if (videoFile.video.isAudio) audioCoverArtSizePx else null,
                     thumbnailHeightPx = if (videoFile.video.isAudio) audioCoverArtSizePx else null,
@@ -1946,12 +1944,12 @@ private fun FileSystemSearchContent(
     ) {
       VideoCardUiConfig(
         unlimitedNameLines = unlimitedNameLines,
-        showThumbnails = showVideoThumbnails && !archiveMode,
+        showThumbnails = showVideoThumbnails,
         showSizeChip = showSizeChip,
         showResolutionChip = showResolutionChip && !archiveMode,
         showFramerateInResolution = showFramerateInResolution && !archiveMode,
         showCodecSupportIndicator = showCodecSupportIndicator && !archiveMode,
-        showProgressBar = showProgressBar && !archiveMode,
+        showProgressBar = showProgressBar,
         showDateChip = showDateChip,
         showUnplayedOldVideoLabel = showUnplayedOldVideoLabel,
         unplayedOldVideoDays = unplayedOldVideoDays,
@@ -1965,12 +1963,12 @@ private fun FileSystemSearchContent(
       )
     }
 
-  // ZIP entries carry no probed metadata or thumbnails; suppress fields that would stay empty.
+  // ZIP entries support thumbnails, but folder totals have no probed duration.
   val baseFolderCardUiConfig = rememberFolderCardUiConfig()
   val folderCardUiConfig =
     remember(baseFolderCardUiConfig, archiveMode) {
       if (archiveMode) {
-        baseFolderCardUiConfig.copy(showTotalDurationChip = false, showFolderThumbnails = false)
+        baseFolderCardUiConfig.copy(showTotalDurationChip = false)
       } else {
         baseFolderCardUiConfig
       }
@@ -2137,10 +2135,11 @@ private fun FileSystemSearchContent(
                   contentType = { "video_item" },
                   span = { GridItemSpan(spansInfo.videoSpan) },
                 ) { videoFile ->
-                  val archiveEntry = ZipArchiveMedia.isPlaybackUri(videoFile.video.uri.toString())
                   VideoCard(
                     video = videoFile.video,
-                    progressPercentage = videoFilesWithPlayback[videoFile.video.id],
+                    progressPercentage =
+                      videoFilesWithPlayback[videoFile.video.id]
+                        ?: swipePlaybackInfo[videoFile.video.path]?.progressPercentage,
                     isRecentlyPlayed = false,
                     isSelected = false,
                     onClick = { onVideoClick(videoFile.video) },
@@ -2153,8 +2152,6 @@ private fun FileSystemSearchContent(
                     overrideShowSizeChip = null,
                     overrideShowResolutionChip = null,
                     useFolderNameStyle = false,
-                    allowThumbnailGeneration = !archiveEntry,
-                    allowThumbnailLoading = !archiveEntry,
                     uiConfig = videoCardUiConfig,
                   )
                 }
@@ -2229,7 +2226,9 @@ private fun FileSystemSearchContent(
                 val archiveEntry = ZipArchiveMedia.isPlaybackUri(videoFile.video.uri.toString())
                 VideoCard(
                   video = videoFile.video,
-                  progressPercentage = videoFilesWithPlayback[videoFile.video.id],
+                  progressPercentage =
+                    videoFilesWithPlayback[videoFile.video.id]
+                      ?: swipePlaybackInfo[videoFile.video.path]?.progressPercentage,
                   isRecentlyPlayed = false,
                   isSelected = false,
                   onClick = { onVideoClick(videoFile.video) },
@@ -2243,8 +2242,6 @@ private fun FileSystemSearchContent(
                   overrideShowSizeChip = null,
                   overrideShowResolutionChip = null,
                   useFolderNameStyle = false,
-                  allowThumbnailGeneration = !archiveEntry,
-                  allowThumbnailLoading = !archiveEntry,
                   uiConfig = videoCardUiConfig,
                   thumbnailWidthPx = if (videoFile.video.isAudio) audioCoverArtSizePx else null,
                   thumbnailHeightPx = if (videoFile.video.isAudio) audioCoverArtSizePx else null,

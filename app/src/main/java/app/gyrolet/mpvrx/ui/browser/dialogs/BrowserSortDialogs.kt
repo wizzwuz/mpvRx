@@ -1121,15 +1121,12 @@ fun VideoSortDialog(
 
 private val ARCHIVE_UNSUPPORTED_TOGGLES =
   setOf(
-    "Thumbnails",
     "Duration",
     "Total Duration",
     "Resolution",
     "Framerate",
     "Codec support",
     "Subtitle",
-    "Progress Bar",
-    "Folder Thumbnails",
   )
 
 @Composable
@@ -1138,8 +1135,7 @@ fun FileSystemSortDialog(
   onDismiss: () -> Unit,
   isAtRoot: Boolean = true,
   onMetadataFieldEnabled: (() -> Unit)? = null,
-  // ZIP entries are read from the archive's directory only; they cannot be probed for media
-  // metadata or thumbnails, so options that depend on it would silently show nothing.
+  // ZIP entries support thumbnails, but have no scanned duration or codec metadata.
   isArchive: Boolean = false,
 ) {
   val browserPreferences = koinInject<BrowserPreferences>()
@@ -1497,6 +1493,7 @@ fun FileSystemSortDialog(
 fun NetworkSortDialog(
   isOpen: Boolean,
   onDismiss: () -> Unit,
+  showSortOptions: Boolean = true,
 ) {
   val browserPreferences = koinInject<BrowserPreferences>()
   val appearancePreferences = koinInject<AppearancePreferences>()
@@ -1588,7 +1585,7 @@ fun NetworkSortDialog(
         else -> Pair("Asc", "Desc")
       }
     },
-    showSortOptions = true,
+    showSortOptions = showSortOptions,
     layoutModeSelector =
       ViewModeSelector(
         label = "Layout",

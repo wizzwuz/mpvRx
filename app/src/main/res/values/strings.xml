@@ -282,8 +282,6 @@
   <string name="pref_player_gestures_volume">Volume gestures</string>
   <string name="pref_player_gestures_pinch_to_zoom">Pinch to zoom</string>
   <string name="pref_player_gestures_pinch_to_zoom_subtitles">Pinch to zoom subtitles</string>
-  <string name="pref_player_gestures_two_finger_speed_swipe">Two-finger swipe for speed</string>
-  <string name="pref_player_gestures_two_finger_speed_swipe_summary">Swipe up or down with two fingers to change playback speed by 0.25x, from 0.5x to 4x</string>
   <string name="pref_subtitles_secondary_pinch_zoom">Pinch zooms secondary subtitle</string>
   <string name="pref_subtitles_secondary_pinch_zoom_summary">When pinching the primary subtitle, also scale the secondary subtitle</string>
   <string name="pref_player_gestures_swipe_subtitles_to_seek_dialog">Swipe subtitles to seek dialog</string>
@@ -362,7 +360,7 @@
   <string name="pref_subtitles_font_no_custom">No custom fonts loaded</string>
   <string name="pref_subtitles_font_copy_failed">Could not load fonts: %1$s</string>
   <string name="pref_subtitles_autoload_title">Automatically load subtitles</string>
-  <string name="pref_subtitles_autoload_summary">Automatically load external subtitles with the same name.</string>
+  <string name="pref_subtitles_autoload_summary">Automatically find matching subtitles beside the video and up to two subfolders deep.</string>
   <string name="pref_subtitles_search_online">Online Subtitle Search…</string>
   <string name="pref_subtitles_search_languages">Subtitle Languages</string>
   <string name="all_languages">All (Selective Filtering)</string>
@@ -1291,6 +1289,9 @@
   <string name="player_horizontal_flip_off">Horizontal flip off</string>
   <string name="player_vertical_flip_on">Vertical flip on</string>
   <string name="player_vertical_flip_off">Vertical flip off</string>
+  <string name="player_hwplus_unsupported">%1$s isn\'t supported in HW+ mode. Switch to HW or SW decoding to use it.</string>
+  <string name="player_hwplus_use_hw">Use HW</string>
+  <string name="player_hwplus_cpu_deband">CPU Debanding</string>
   <string name="btn_label_back">Back Arrow</string>
   <string name="btn_label_title">Video Title</string>
   <string name="btn_label_bookmarks">Chapters / Bookmarks</string>
@@ -1807,14 +1808,10 @@
   <string name="ui_no_storage_location_configured">No storage location configured</string>
   <string name="ui_script_file_not_found">Script file not found</string>
   <string name="ui_search_models">Search models...</string>
-  <string name="ui_portrait_playback_buttons">Portrait playback buttons</string>
-  <string name="ui_landscape_playback_buttons">Landscape playback buttons</string>
   <string name="ui_portrait_seekbar_position">Portrait seekbar position</string>
   <string name="ui_landscape_seekbar_position">Landscape seekbar position</string>
-  <string name="pref_layout_center_seekbar_above">Centered · seekbar above actions</string>
-  <string name="pref_layout_center_seekbar_below">Centered · seekbar below actions</string>
-  <string name="pref_layout_playback_above">Playback and actions above seekbar</string>
-  <string name="pref_layout_playback_below">Playback and actions below seekbar</string>
+  <string name="pref_layout_seekbar_above">Seekbar above</string>
+  <string name="pref_layout_seekbar_below">Seekbar below</string>
   <string name="pref_player_buttons_opacity">Player button background opacity</string>
   <string name="ui_time_network_clock">Time + Network clock</string>
   <string name="ui_show_media_info_in_chooser">Show Media Info in chooser</string>
@@ -1895,7 +1892,6 @@
   <string name="oss_androidx_documentfile_description">Abstraction layer for document storage access.</string>
   <string name="oss_androidx_media_description">Android media session and playback APIs.</string>
   <string name="oss_androidx_palette_description">Extracts dominant and vibrant color palettes from images.</string>
-  <string name="oss_androidx_profile_installer_description">Prefetches classes and methods for faster app startup.</string>
   <string name="oss_google_material_description">Material Design components and theming library.</string>
   <string name="oss_google_cast_description">Chromecast framework for media casting.</string>
   <string name="oss_material_symbols_description">Material Symbols icon set for Compose.</string>
@@ -2663,7 +2659,10 @@
     <item quantity="one">Restored settings from %1$s. Skipped %2$d damaged entry. Downloads will use Configuration/Downloads.</item>
     <item quantity="other">Restored settings from %1$s. Skipped %2$d damaged entries. Downloads will use Configuration/Downloads.</item>
   </plurals>
-  <string name="settings_restore_reverted">Settings restored from %1$s caused a crash, so they were reverted.</string>
+  <plurals name="pref_import_skipped_invalid">
+    <item quantity="one">Skipped %1$d invalid setting</item>
+    <item quantity="other">Skipped %1$d invalid settings</item>
+  </plurals>
   <string name="onboarding_configuration_restore_failed">Folder setup could not be completed: %1$s</string>
   <string name="navbar_glow_title">Glass Glow</string>
   <string name="navbar_glow_summary">Show navbar rim lighting and touch glow</string>
@@ -2690,6 +2689,8 @@
   <string name="network_server_scan_unavailable">Discovery is unavailable or incomplete. Choose a saved address or type one.</string>
   <string name="network_server_discovery_hint">Finds servers that advertise on your local network. Device addresses are shortcuts, not detected servers. Credentials are entered below.</string>
   <string name="network_smb_share_folder">Share / folder (optional)</string>
+  <string name="network_dlna_description_path">Device description path</string>
+  <string name="network_dlna_description_hint">Find a nearby DLNA server, or enter its device description URL and path.</string>
   <string name="network_smb_share_hint">Leave empty or use / to browse all shared folders. Enter /Media or /Media/Movies to open a specific folder.</string>
   <string name="network_smb_username_hint">Use your username or DOMAIN\\username for a domain account.</string>
   <string name="player_zoom_overlays_follow">Zoom player OSD &amp; subtitles with video</string>
@@ -2903,6 +2904,7 @@
   <string name="jellyfin_details">Details</string>
   <string name="jellyfin_trailer">Trailer</string>
   <string name="jellyfin_open_trailer_error">No app is available to open trailers.</string>
+  <string name="no_app_for_action">No app on this device can open this.</string>
   <string name="jellyfin_libraries">Libraries</string>
   <string name="jellyfin_continue_watching">Continue watching</string>
   <string name="jellyfin_latest_movies">Latest movies</string>
@@ -2998,7 +3000,6 @@
   <string name="pref_measure_enabled_title">Share diagnostics with Measure</string>
   <string name="pref_measure_enabled_summary">Opt in to send crashes, ANRs, performance metrics and session activity to Measure. Disabled by default.</string>
   <string name="pref_measure_not_configured">Diagnostics unavailable: this build has no Measure API key.</string>
-
   <!-- Custom fork strings (gestures, zoom, right panel) -->
   <string name="pref_appearance_hide_player_buttons_background_title">Hide player buttons background</string>
   <string name="pref_appearance_hide_player_buttons_background_summary">Hide the background of all player control buttons</string>
@@ -3062,4 +3063,15 @@
   <string name="player_sheets_aspect_ratio_reset_advanced_zoom">Reset Advanced Zoom</string>
   <string name="pref_player_remember_video_zoom_title">Remember zoom position</string>
   <string name="pref_player_remember_video_zoom_summary">Restore zoom and pan positions automatically for new videos</string>
+
+  <string name="pref_layout_portrait_playback_position">Portrait playback controls</string>
+  <string name="pref_layout_landscape_playback_position">Landscape playback controls</string>
+  <string name="pref_layout_playback_center">Center of screen</string>
+  <string name="pref_layout_playback_with_buttons">With button row</string>
+  <string name="pref_layout_playback_above_seekbar">Above seekbar</string>
+  <string name="pref_layout_playback_below_seekbar">Below seekbar</string>
+  <string name="pref_action_open_page">Open page</string>
+  <string name="pref_action_open_dialog">Open dialog</string>
+  <string name="pref_persistent_status_progress_line">Thin playback progress line</string>
 </resources>
+
