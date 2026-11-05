@@ -60,7 +60,7 @@ import java.util.Locale
 class ExternalTextEditorActivity : AppCompatActivity() {
   @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
   override fun startActivityForResult(intent: Intent, requestCode: Int, options: Bundle?) =
-    startForResultOrToast(requestCode) { super.startActivityForResult(intent, requestCode, options) }
+    startForResultOrToast(intent, requestCode) { target -> super.startActivityForResult(target, requestCode, options) }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)

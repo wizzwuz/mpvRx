@@ -170,7 +170,7 @@ open class MainActivity : AppCompatActivity() {
 
   @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
   override fun startActivityForResult(intent: Intent, requestCode: Int, options: Bundle?) =
-    startForResultOrToast(requestCode) { super.startActivityForResult(intent, requestCode, options) }
+    startForResultOrToast(intent, requestCode) { target -> super.startActivityForResult(target, requestCode, options) }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     // Match REX Player's splash handoff: use only Android's system SplashScreen and hand
@@ -750,6 +750,8 @@ open class MainActivity : AppCompatActivity() {
               backStack = typedBackstack,
               opaqueFrom = app.gyrolet.mpvrx.ui.preferences.PreferencesScreen,
               tvSafeArea = true,
+              bottomOverlayClearance = NavigationBarState.miniPlayerClearance,
+              bottomOverlayExempt = MainScreen,
               onBack = {
                 if (typedBackstack.size <= 1 || !typedBackstack.popSafely()) {
                   this@MainActivity.finish()

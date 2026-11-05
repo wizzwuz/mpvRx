@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import app.gyrolet.mpvrx.presentation.components.AppAlertDialog as AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,9 +56,13 @@ import app.gyrolet.mpvrx.presentation.components.AppPickerSheet
 import app.gyrolet.mpvrx.presentation.components.PlayerSheetSearchField
 import app.gyrolet.mpvrx.ui.icons.Icon
 import app.gyrolet.mpvrx.ui.icons.Icons
+import app.gyrolet.mpvrx.ui.player.controls.components.rememberTvInitialFocusRequester
+import app.gyrolet.mpvrx.ui.player.controls.components.tvFocusHighlight
+import app.gyrolet.mpvrx.ui.player.controls.components.tvInitialFocus
 import app.gyrolet.mpvrx.ui.tv.canLaunch
 import app.gyrolet.mpvrx.utils.device.DeviceFormFactor
 import app.gyrolet.mpvrx.utils.media.OpenDocumentTreeContract
+import app.gyrolet.mpvrx.utils.media.isPathBasedDocumentAuthority
 import app.gyrolet.mpvrx.utils.storage.StorageVolumeUtils
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -71,16 +76,21 @@ fun FolderPickerDialog(
   currentPath: String = Environment.getExternalStorageDirectory().absolutePath,
   onDismiss: () -> Unit,
   onFolderSelected: (String) -> Unit,
+  allowCurrentFolder: Boolean = false,
+  useSystemPickerOnTv: Boolean = true,
 ) {
   if (!isOpen) return
 
   val context = LocalContext.current
   // TVs choose with the system folder picker; this list is the fallback when they have none.
-  var useSystemPicker by rememberSaveable { mutableStateOf(DeviceFormFactor.isTelevision(context)) }
+  var useSystemPicker by rememberSaveable {
+    mutableStateOf(useSystemPickerOnTv && DeviceFormFactor.isTelevision(context))
+  }
   if (useSystemPicker) {
     SystemFolderPicker(onDismiss, onFolderSelected, onUnavailable = { useSystemPicker = false })
     return
   }
+  val initialFocusRequester = rememberTvInitialFocusRequester(requestKey = isOpen)
 
   // Get all available storage volumes
   val storageVolumes =
@@ -109,6 +119,11 @@ fun FolderPickerDialog(
     remember(selectedPath) {
       selectedPath?.let { File(it) }
     }
+  val storageRoots = remember(storageVolumes) {
+    storageVolumes.mapNotNull(StorageVolumeUtils::getVolumePath).toSet() +
+      Environment.getExternalStorageDirectory().absolutePath
+  }
+  val parentPath = if (selectedPath in storageRoots) null else currentDir?.parent
 
   LaunchedEffect(selectedPath) {
     query = ""
@@ -117,10 +132,11 @@ fun FolderPickerDialog(
   val listing by produceState<FolderPickerListing?>(null, selectedPath) {
     val path = selectedPath
     value = withContext(Dispatchers.IO) {
-      val directories = runCatching {
+      val children = runCatching {
         path?.let { File(it).listFiles { file -> file.isDirectory && !file.name.startsWith(".") } }
-      }.getOrNull().orEmpty().distinctBy { it.absolutePath }.sortedBy { it.name.lowercase() }
-      FolderPickerListing(path, directories)
+      }.getOrNull()
+      val directories = children.orEmpty().distinctBy { it.absolutePath }.sortedBy { it.name.lowercase() }
+      FolderPickerListing(path, directories, path == null || children != null)
     }
   }
   val currentListing = listing?.takeIf { it.path == selectedPath }
@@ -130,8 +146,8 @@ fun FolderPickerDialog(
 
   // Check if selected path is the same as current path
   val isSameAsSource =
-    remember(selectedPath, currentPath) {
-      selectedPath != null && selectedPath == currentPath
+    remember(selectedPath, currentPath, allowCurrentFolder) {
+      !allowCurrentFolder && selectedPath != null && selectedPath == currentPath
     }
 
   if (showCreateFolderDialog && selectedPath != null) {
@@ -165,7 +181,7 @@ fun FolderPickerDialog(
     headerActions = {
       if (selectedPath != null) {
         FilledTonalIconButton(
-          onClick = { selectedPath = currentDir?.parent },
+          onClick = { selectedPath = parentPath },
           modifier = Modifier.size(40.dp),
           colors =
             IconButtonDefaults.filledTonalIconButtonColors(
@@ -184,7 +200,7 @@ fun FolderPickerDialog(
       }
       FilledTonalIconButton(
         onClick = { selectedPath = Environment.getExternalStorageDirectory().absolutePath },
-        modifier = Modifier.size(40.dp),
+        modifier = Modifier.size(40.dp).tvInitialFocus(initialFocusRequester),
         colors =
           IconButtonDefaults.filledTonalIconButtonColors(
             containerColor = MaterialTheme.colorScheme.secondaryContainer,
@@ -232,7 +248,7 @@ fun FolderPickerDialog(
       }
       Button(
         onClick = { selectedPath?.let { onFolderSelected(it) } },
-        enabled = selectedPath != null && !isSameAsSource,
+        enabled = selectedPath != null && !isSameAsSource && currentListing?.accessible == true,
         colors =
           ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
@@ -249,7 +265,7 @@ fun FolderPickerDialog(
     modifier = modifier,
   ) {
     BackHandler(enabled = selectedPath != null && !showCreateFolderDialog) {
-      selectedPath = currentDir?.parent
+      selectedPath = parentPath
     }
     Column(
       modifier = Modifier.fillMaxWidth(),
@@ -311,6 +327,13 @@ fun FolderPickerDialog(
               item(key = "loading") {
                 CircularProgressIndicator(modifier = Modifier.padding(16.dp).size(24.dp))
               }
+            } else if (!currentListing.accessible) {
+              item {
+                Text(
+                  text = androidx.compose.ui.res.stringResource(app.gyrolet.mpvrx.R.string.tv_picker_no_access),
+                  modifier = Modifier.padding(16.dp),
+                )
+              }
             } else if (folders.isEmpty()) {
               item {
                 Text(
@@ -343,6 +366,7 @@ private fun FolderItem(
     modifier =
       modifier
         .fillMaxWidth()
+        .tvFocusHighlight(RoundedCornerShape(12.dp))
         .clickable(onClick = onClick)
         .padding(horizontal = 12.dp, vertical = 8.dp),
     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -475,7 +499,7 @@ private fun CreateFolderDialog(
   )
 }
 
-private data class FolderPickerListing(val path: String?, val folders: List<File>)
+private data class FolderPickerListing(val path: String?, val folders: List<File>, val accessible: Boolean)
 
 /** Opens the system folder picker once and hands back the storage path of the chosen folder. */
 @Composable
@@ -502,11 +526,16 @@ private fun SystemFolderPicker(
 
 /** Storage path behind an external-storage tree; null for cloud and virtual roots. */
 private fun treeDirectory(uri: Uri): File? {
-  if (uri.authority != "com.android.externalstorage.documents") return null
+  if (!isPathBasedDocumentAuthority(uri.authority)) return null
   return runCatching {
     val documentId = DocumentsContract.getTreeDocumentId(uri)
     val volume = documentId.substringBefore(':')
-    val root = if (volume == "primary") Environment.getExternalStorageDirectory() else File("/storage", volume)
-    File(root, documentId.substringAfter(':', "")).takeIf(File::isDirectory)
+    val root = when {
+      volume == "primary" -> Environment.getExternalStorageDirectory()
+      volume.matches(Regex("[A-Za-z0-9-]+")) -> File("/storage", volume)
+      else -> return@runCatching null
+    }.canonicalFile
+    val folder = File(root, documentId.substringAfter(':', "")).canonicalFile
+    folder.takeIf { it.isDirectory && (it == root || it.path.startsWith(root.path + File.separator)) }
   }.getOrNull()
 }

@@ -12,6 +12,7 @@ package app.gyrolet.mpvrx.ui.tv
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.layout.PaddingValues
@@ -37,7 +38,8 @@ internal fun isTelevision(): Boolean = DeviceFormFactor.isTelevision(LocalContex
 internal fun <I> ActivityResultLauncher<I>.canLaunch(
   context: Context,
   input: I,
-): Boolean = contract.createIntent(context, input).resolveActivity(context.packageManager) != null
+): Boolean = runCatching { contract.createIntent(context, input).resolveActivity(context.packageManager) != null }
+  .getOrDefault(false)
 
 /** TVs open the system picker when they have one; phones, and TVs without one, use mpvRx's own. */
 internal fun <I> ActivityResultLauncher<I>.launchOrInApp(
@@ -51,18 +53,40 @@ internal fun <I> ActivityResultLauncher<I>.launchOrInApp(
   launch(input)
 }
 
-/**
- * Body for an Activity's startActivityForResult override: a result launch nothing can handle, like a
- * file picker on a TV without one, shows a toast instead of crashing. startActivity (code -1) still throws.
- */
+internal fun shouldOfferTvPickerFallback(isTelevision: Boolean, requestCode: Int, intent: Intent): Boolean =
+  isTelevision && requestCode >= 0 && intent.component == null && intent.action in TvPickerActivity.SUPPORTED_ACTIONS
+
 internal inline fun Activity.startForResultOrToast(
+  intent: Intent,
   requestCode: Int,
-  start: () -> Unit,
+  start: (Intent) -> Unit,
 ) {
+  val fallback =
+    if (requestCode >= 0 && shouldOfferTvPickerFallback(DeviceFormFactor.isTelevision(this), requestCode, intent)) {
+      Intent(intent).setClass(this, TvPickerActivity::class.java)
+    } else {
+      null
+    }
+  val target =
+    if (fallback != null && !runCatching { intent.resolveActivity(packageManager) != null }.getOrDefault(false)) {
+      fallback
+    } else {
+      intent
+    }
   try {
-    start()
-  } catch (error: ActivityNotFoundException) {
-    if (requestCode < 0) throw error
+    start(target)
+  } catch (error: RuntimeException) {
+    if (requestCode < 0 || (error !is ActivityNotFoundException && (error !is SecurityException || fallback == null))) {
+      throw error
+    }
+    if (fallback != null && target !== fallback) {
+      try {
+        start(fallback)
+        return
+      } catch (_: ActivityNotFoundException) {
+      } catch (_: SecurityException) {
+      }
+    }
     AppToast.warning(this, getString(R.string.no_app_for_action))
   }
 }
