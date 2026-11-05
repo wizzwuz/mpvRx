@@ -1375,7 +1375,6 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
         return@withLock
       }
 
-      applyDeferredVideoSelectionLocked()
       MPVLib.setPropertyBoolean("pause", desiredPaused)
       updateState {
         it.copy(
@@ -1384,6 +1383,10 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
           error = null,
         )
       }
+      // A Surface can return while the saved position is still restoring. Its ready callback
+      // cannot restore a suspended track in LOADING; retry once this generation is READY.
+      restoreSuspendedVideoTrackLocked()
+      applyDeferredVideoSelectionLocked()
       applySpatialAudioLocked()
       publishTimelinePropertiesLocked()
       propBoolean.emit("pause", desiredPaused)
