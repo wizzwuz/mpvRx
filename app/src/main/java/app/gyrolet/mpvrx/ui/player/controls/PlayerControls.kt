@@ -9,6 +9,9 @@
 
 package app.gyrolet.mpvrx.ui.player.controls
 
+import app.gyrolet.mpvrx.preferences.BrowserPreferences
+import app.gyrolet.mpvrx.utils.storage.FileTypeUtils
+
 import app.gyrolet.mpvrx.ui.player.DeclaredPlaybackMediaKind
 import app.gyrolet.mpvrx.ui.player.PlaybackSession
 import app.gyrolet.mpvrx.ui.player.declaredMediaKind
@@ -424,6 +427,7 @@ fun PlayerControls(
   val advancedPreferences = koinInject<AdvancedPreferences>()
   val appearancePreferences = koinInject<AppearancePreferences>()
   val aiPreferences = koinInject<AiPreferences>()
+  val showMediaExtensions by koinInject<BrowserPreferences>().showExtensionField.collectAsState()
   val aiEnabled by aiPreferences.enabled.collectAsState()
   val realtimeSubsEnabled by aiPreferences.realtimeSubsEnabled.collectAsState()
   val liquidGlassPreference by appearancePreferences.liquidGlassEnabled.collectAsState()
@@ -453,7 +457,6 @@ fun PlayerControls(
   val navigationBarRequested by playerPreferences.showSystemNavigationBar.collectAsState()
   val showSystemNavigationBar = navigationBarRequested || WindowInsets.areNavigationBarsVisible
   val showControlsDrawer by playerPreferences.showControlsDrawer.collectAsState()
-  var seekRippleRequest by remember { mutableStateOf<SeekRippleRequest?>(null) }
   val controlsShown by viewModel.controlsShown.collectAsState()
   val controlsInteractionEpoch by viewModel.controlsInteractionEpoch.collectAsState()
   val tvPlayFocusRequester = rememberTvInitialFocusRequester(enabled = controlsShown)
@@ -465,6 +468,7 @@ fun PlayerControls(
   val seekBarShown by viewModel.seekBarShown.collectAsState()
   val paused by PlaybackSession.propBoolean["pause"].collectAsStateWithLifecycle()
   val playbackSessionState by PlaybackSession.state.collectAsStateWithLifecycle()
+  var seekRippleRequest by remember(playbackSessionState.generation) { mutableStateOf<SeekRippleRequest?>(null) }
   val duration by PlaybackSession.propInt["duration"].collectAsStateWithLifecycle()
   val playbackQueue by PlaybackSession.queue.collectAsStateWithLifecycle()
   val preciseDuration by viewModel.preciseDuration.collectAsState()
@@ -485,6 +489,8 @@ fun PlayerControls(
   val doubleTapSeekAmount = seekState.amount
   val showDoubleTapOvals by playerPreferences.showDoubleTapOvals.collectAsState()
   val showSeekTime by playerPreferences.showSeekTimeWhileSeeking.collectAsState()
+  val doubleTapSeekAreaWidth by gesturePreferences.doubleTapSeekAreaWidth.collectAsState()
+  val seekAreaFraction = (doubleTapSeekAreaWidth / 100f).coerceIn(0.01f, 0.5f)
   val showSeekbarDuringHorizontalSeeking by gesturePreferences.showSeekbarDuringHorizontalSeeking.collectAsState()
   val dontShowSeekBarOnDoubleTap by gesturePreferences.dontShowSeekBarOnDoubleTap.collectAsState()
   val showBufferedRange by playerPreferences.showBufferedRange.collectAsState()
@@ -563,6 +569,8 @@ fun PlayerControls(
   val isHdrOutputEnabled by viewModel.isHdrScreenOutputEnabled.collectAsState()
   val isAmbientEnabled by viewModel.isAmbientEnabled.collectAsState()
   val isPostProcessingEnabled by viewModel.isPostProcessingEnabled.collectAsState()
+  val motionInterpolationState by viewModel.motionInterpolation.state.collectAsState()
+  val isMotionInterpolationEnabled = motionInterpolationState.config.enabled
   val backgroundPlaybackEnabled by PlaybackSession.videoBackgroundPlaybackEnabled.collectAsState(
     initial = PlaybackSession.isVideoBackgroundPlaybackEnabled(),
   )
@@ -628,10 +636,20 @@ fun PlayerControls(
   val queuedTitle =
     playbackQueue.currentItem?.title?.takeIf { playbackQueue.isExplicitQueue && it.isNotBlank() }
   val mediaTitle =
-    remember(queuedTitle, rawMediaTitle, playerActivity) {
-      queuedTitle
+    remember(queuedTitle, rawMediaTitle, playerActivity, showMediaExtensions) {
+      val title = queuedTitle
         ?: playerActivity.getTitleForControls().takeIf { it.isNotBlank() }
         ?: rawMediaTitle
+      title?.let { rawTitle ->
+        val extension = rawTitle.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+        if (!showMediaExtensions &&
+          (extension in FileTypeUtils.VIDEO_EXTENSIONS || extension in FileTypeUtils.AUDIO_EXTENSIONS)
+        ) {
+          FileTypeUtils.stripExtension(rawTitle)
+        } else {
+          rawTitle
+        }
+      }
     }
 
   val topRightControlsPref by appearancePreferences.topRightControls.collectAsState()
@@ -769,7 +787,11 @@ fun PlayerControls(
   // Vignette behind the top and bottom bars. Fades with the bars instead of sliding, so it stays
   // anchored to the frame edges whatever animation style the bars themselves use.
   val edgeVignetteAlpha by animateFloatAsState(
-    if (controlsShown && !areControlsLocked && !areSlidersShown) 1f else 0f,
+    if (controlsShown && !areControlsLocked && !areSlidersShown) {
+      if (enableLiquidGlass) 0.6f else 1f
+    } else {
+      0f
+    },
     animationSpec =
       if (reduceMotion) {
         snap()
@@ -845,13 +867,16 @@ fun PlayerControls(
             speedMultiplier = animSpeed,
             animationState = videoOpenAnimState,
           )
-          DoubleTapToSeekOvals(
-            amount = doubleTapSeekAmount,
-            showOvals = false,
-            showSeekIcon = true,
-            showSeekTime = true,
-            rippleRequest = seekRippleRequest,
-          )
+          key(playbackSessionState.generation) {
+            DoubleTapToSeekOvals(
+              amount = doubleTapSeekAmount,
+              showOvals = false,
+              showSeekIcon = true,
+              showSeekTime = true,
+              rippleRequest = null,
+              seekAreaFraction = seekAreaFraction,
+            )
+          }
           // Status HUD remains visible even after playback controls fade away.
           PersistentStatusHud(
             viewModel = viewModel,
@@ -1030,39 +1055,24 @@ fun PlayerControls(
             .clipToBounds()
             .onSizeChanged { playerBounds = it },
       ) {
-    DoubleTapToSeekOvals(
-      amount = doubleTapSeekAmount,
-      showOvals = showDoubleTapOvals,
-      showSeekIcon = showSeekTime,
-      showSeekTime = showSeekTime,
-      rippleRequest = seekRippleRequest,
-    )
+    key(playbackSessionState.generation) {
+      DoubleTapToSeekOvals(
+        amount = doubleTapSeekAmount,
+        showOvals = showDoubleTapOvals,
+        showSeekIcon = showSeekTime,
+        showSeekTime = showSeekTime,
+        rippleRequest = seekRippleRequest,
+        seekAreaFraction = seekAreaFraction,
+      )
+    }
 
     VideoOpenAnimationOverlay(
       style = videoOpenAnim,
       speedMultiplier = animSpeed,
       animationState = videoOpenAnimState,
     )
-    if (enableLiquidGlass) {
-      if (playerKyantBackdrop != null) {
-        VideoGlassBackdropSource(glassSource, videoBackdrop)
-      }
-      Box(
-        modifier =
-          Modifier
-            .fillMaxSize()
-            .background(
-              Brush.verticalGradient(
-                listOf(
-                  Color.Black,
-                  Color.Transparent,
-                  Color.Transparent,
-                  Color.Black,
-                ),
-              ),
-              alpha = transparentOverlay,
-            ),
-      )
+    if (enableLiquidGlass && playerKyantBackdrop != null) {
+      VideoGlassBackdropSource(glassSource, videoBackdrop)
     }
     if (brightness < 0) {
       Box(
@@ -1131,7 +1141,7 @@ fun PlayerControls(
             Modifier
               .fillMaxSize()
               .drawBehind {
-                if (reduceMotion && transparentOverlay > 0f) {
+                if (reduceMotion && !enableLiquidGlass && transparentOverlay > 0f) {
                   drawRect(FullScreenScrimBrush, alpha = transparentOverlay)
                 }
                 // Only while the bars are up, and only at the edges, so the frame stays clean.
@@ -2500,6 +2510,7 @@ fun PlayerControls(
         isHdrOutputEnabled,
         isAmbientEnabled,
         isPostProcessingEnabled,
+        isMotionInterpolationEnabled,
         backgroundPlaybackEnabled,
         statisticsPage,
         mediaScopesState.overlayVisible,
@@ -2515,6 +2526,7 @@ fun PlayerControls(
           if (isHdrOutputEnabled) add(PlayerButton.HDR_MODE)
           if (isAmbientEnabled) add(PlayerButton.AMBIENT_MODE)
           if (isPostProcessingEnabled) add(PlayerButton.POST_PROCESSING)
+          if (isMotionInterpolationEnabled) add(PlayerButton.MOTION_INTERPOLATION)
           if (backgroundPlaybackEnabled) add(PlayerButton.BACKGROUND_PLAYBACK)
           if (statisticsPage == 6) add(PlayerButton.TIME_NETWORK)
           if (mediaScopesState.overlayVisible) add(PlayerButton.SCOPES)
@@ -3152,11 +3164,13 @@ private fun CustomControlButton(
     }
   } else {
     val buttonInteractionSource = remember { MutableInteractionSource() }
+    val hideBackground = LocalPlayerButtonsOpacity.current <= 0f
     Surface(
       shape = CircleShape,
       color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f).asPlayerButtonBackground(),
-      contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.1f).asPlayerButtonBackground()),
+      contentColor = if (hideBackground) playerButtonContentColor() else MaterialTheme.colorScheme.onSecondaryContainer,
+      border = if (hideBackground) null else
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.1f).asPlayerButtonBackground()),
       modifier =
         Modifier
           .clip(CircleShape)
@@ -3180,4 +3194,3 @@ private fun CustomControlButton(
     }
   }
 }
-

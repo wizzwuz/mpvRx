@@ -13,6 +13,7 @@ import app.gyrolet.mpvrx.domain.anime4k.Anime4KManager
 import app.gyrolet.mpvrx.domain.fonts.GoogleFontsRepository
 import app.gyrolet.mpvrx.domain.hdr.HdrToysManager
 import app.gyrolet.mpvrx.domain.hdr.MpvShaderRuntime
+import app.gyrolet.mpvrx.domain.omniphony.OmniphonyEngine
 import app.gyrolet.mpvrx.domain.torrent.TorrentStreamingEngine
 import app.gyrolet.mpvrx.network.AndroidCookieJar
 import app.gyrolet.mpvrx.network.SharedHttpClient
@@ -57,6 +58,7 @@ val domainModule =
     single<MpvShaderRuntime> { PlaybackSessionShaderRuntime }
     single { MpvConfigCache(androidContext(), get()) }
     single { HdrToysManager(androidContext(), get()) }
+    single { OmniphonyEngine(androidContext(), get()) }
     single { GoogleFontsRepository(androidContext(), get()) }
     single { OnlineSubtitleFileStore(androidContext(), get()) }
     single { WyzieSearchRepository(androidContext(), get(), get(), get(), get()) }
@@ -78,6 +80,16 @@ val domainModule =
     single<AiClient>(named("anthropic")) { AnthropicClient(get(), get()) }
     single<AiClient>(named("openrouter")) { OpenRouterClient(get(), get()) }
     single<AiClient>(named("together")) { TogetherClient(get(), get()) }
+    single<AiClient>(named("custom_openai")) {
+      val preferences = get<AiPreferences>()
+      OpenAiClient(
+        get(),
+        get(),
+        baseUrl = { preferences.customOpenAiBaseUrl.get() },
+        providerName = "Custom OpenAI-compatible",
+        compatible = true,
+      )
+    }
     single { SubtitleGenerationService(androidContext(), get(), get(), get(), get(), get()) }
     single { RealtimeSubtitleService(androidContext(), get(), get(), get(), get(), get(), get()) }
     single {
@@ -90,6 +102,7 @@ val domainModule =
         get<AiClient>(named("anthropic")),
         get<AiClient>(named("openrouter")),
         get<AiClient>(named("together")),
+        get<AiClient>(named("custom_openai")),
         get<Json>(),
       )
     }

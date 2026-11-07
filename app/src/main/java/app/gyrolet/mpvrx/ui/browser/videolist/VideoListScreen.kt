@@ -856,6 +856,7 @@ internal fun VideoListContent(
   val showResolutionChip by browserPreferences.showResolutionChip.collectAsState()
   val showFramerateInResolution by browserPreferences.showFramerateInResolution.collectAsState()
   val showProgressBar by browserPreferences.showProgressBar.collectAsState()
+  val grayscaleWatchedThumbnails by browserPreferences.grayscaleWatchedThumbnails.collectAsState()
   val showDateChip by browserPreferences.showDateChip.collectAsState()
   val showCodecSupportIndicator by browserPreferences.showCodecSupportIndicator.collectAsState()
   val showUnplayedOldVideoLabel by appearancePreferences.showUnplayedOldVideoLabel.collectAsState()
@@ -883,6 +884,7 @@ internal fun VideoListContent(
       showFramerateInResolution,
       showCodecSupportIndicator,
       showProgressBar,
+      grayscaleWatchedThumbnails,
       showDateChip,
       showUnplayedOldVideoLabel,
       unplayedOldVideoDays,
@@ -902,6 +904,7 @@ internal fun VideoListContent(
         showFramerateInResolution = showFramerateInResolution,
         showCodecSupportIndicator = showCodecSupportIndicator,
         showProgressBar = showProgressBar,
+        grayscaleWatchedThumbnails = grayscaleWatchedThumbnails,
         showDateChip = showDateChip,
         showUnplayedOldVideoLabel = showUnplayedOldVideoLabel,
         unplayedOldVideoDays = unplayedOldVideoDays,
@@ -994,7 +997,7 @@ internal fun VideoListContent(
           remember(folderId, autoScrollToLastPlayed, recentlyPlayedFilePath) {
             if (autoScrollToLastPlayed && recentlyPlayedFilePath != null) {
               videosWithInfo
-                .indexOfFirst { it.video.path == recentlyPlayedFilePath }
+                .indexOfFirst { RecentlyPlayedOps.matchesVideoPath(recentlyPlayedFilePath, it.video) }
                 .coerceAtLeast(0)
             } else {
               0
@@ -1126,7 +1129,7 @@ internal fun VideoListContent(
                   contentType = { "video_item" },
                 ) { index ->
                   val videoWithInfo = videosWithInfo[index]
-                  val isRecentlyPlayed = recentlyPlayedFilePath?.let { videoWithInfo.video.path == it } ?: false
+                  val isRecentlyPlayed = RecentlyPlayedOps.matchesVideoPath(recentlyPlayedFilePath, videoWithInfo.video)
 
                   VideoCard(
                       video = videoWithInfo.video,
@@ -1196,7 +1199,7 @@ internal fun VideoListContent(
                   contentType = { "video_item" },
                 ) { index ->
                   val videoWithInfo = videosWithInfo[index]
-                  val isRecentlyPlayed = recentlyPlayedFilePath?.let { videoWithInfo.video.path == it } ?: false
+                  val isRecentlyPlayed = RecentlyPlayedOps.matchesVideoPath(recentlyPlayedFilePath, videoWithInfo.video)
 
                   VideoCard(
                       video = videoWithInfo.video,

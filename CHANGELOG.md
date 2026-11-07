@@ -4,6 +4,12 @@ These notes are written in plain English and focus on what changed for real use.
 
 ## Unreleased
 
+- **Recent-playback markers in Tree mode:** The latest played video now receives the same italic, highlighted title as in other browser views, including Tree list, grid, and search results.
+- **Clearer Liquid Glass player controls:** Removed the extra dark overlay and reduced the edge vignette so subtitles remain easier to read. Text labels match their icons, and hidden regular and custom button backgrounds retain readable content.
+- **Custom OpenAI-compatible AI provider:** Added an API base URL, a separate optional key, manual model IDs, and optional model discovery for Chat Completions. Endpoint errors remain visible without exposing the configured key.
+- **Omniphony spatial audio:** Dolby Atmos in TrueHD and E-AC-3, DTS:X and IAMF tracks can be rendered with the [Omniphony](https://github.com/mgth/Omniphony) engine, binaurally for headphones (built-in HRTF, your own SOFA HRTF or a measured room) or to a 5.1 to 7.1.4 speaker layout, with optional room simulation and an object overlay. Omniphony is not included: build the engine and a decoder bridge such as [harletty-bridge](https://github.com/harletty/harletty-bridge) for Android and import them under Settings > Audio > Omniphony spatial audio. Available in the Standard, No Vulkan and FongMi builds; tracks the engine cannot render keep playing through FFmpeg.
+- **mpvlib 1.1.8:** Every libmpv variant now includes the Omniphony decoder, and the FongMi build picks up FongMi's latest changes.
+
 ## 3.0.2 — Android TV, Music and Playback Improvements
 
 **Release date:** October 25, 2026

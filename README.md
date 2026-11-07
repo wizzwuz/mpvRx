@@ -66,6 +66,7 @@ mpvRx pushes the mpv-android experience further with deep customization, thermal
 | **Player Controls Animation** | 5 animation styles: Default, Elastic Bounce, Cinematic Scale, Slide Up, Minimal Fade |
 | **Always Dark Mode** | Option to keep player controls in dark theme regardless of app theme |
 | **Themed Player Controls** | Adaptive controls that match your app theme or system accent |
+| **Adaptive Toasts** | Message-sized pills resize smoothly within safe screen bounds and float above browser navigation, selection actions, and the mini player; swipe dismissal remains available |
 | **Material 3 Expressive UI** | Expressive components, spring-based navigation, responsive grids, and polished predictive-back motion |
 
 </details>
@@ -76,7 +77,9 @@ mpvRx pushes the mpv-android experience further with deep customization, thermal
 | Feature | Description |
 |---|---|
 | **Refined Tap Logic** | Configurable double-tap seek zones (left/center/right) with independently assignable actions |
-| **Multi-Tap Continuous Seeking** | Triple/quadruple tap to keep seeking further without lifting |
+| **YouTube-Style Seek Animation** | Signed cumulative seconds that grow inward without shifting the chevrons, an interruption-safe count pulse, and independently overlapping chevrons that slide and morph into the persistent arrow without restarting it, with optional tap-origin ripple feedback |
+| **Multi-Tap Continuous Seeking** | By default, double-tap a seek zone and then keep tapping to accumulate seconds; reversing direction starts a new count. Feedback resets after 1.2 seconds without an accepted seek. Saved seek intervals, custom tap actions, and reduced-motion settings are respected |
+| **Strict Double-Tap Seeking** | Optional **Gestures > Tap gestures > Require double tap for every seek** switch. Off by default; when enabled, each seek in a double-tap zone requires a fresh pair. Single-tap zones are unchanged |
 | **Horizontal Swipe to Seek** | Swipe across video to seek with live time/delta overlay |
 | **Long-Press Dynamic Speed** | Long-press activates configurable speed boost; swipe left/right to adjust across 8 presets |
 | **Subtitle Drag Gesture** | Hold the center to move primary subtitles; hold either subtitle directly to move that track independently |
@@ -195,6 +198,7 @@ mpvRx pushes the mpv-android experience further with deep customization, thermal
 |---|---|
 | **8 Orientation Modes** | Free, Video (auto aspect ratio), Portrait, Reverse Portrait, Sensor Portrait, Landscape, Reverse Landscape, Sensor Landscape |
 | **Persistent Per-Video** | Orientation remembered per-video across sessions |
+| **Tablets & Foldables** | Every mode and the rotation button apply on large screens as on phones; split-screen and freeform windows follow the system. On Android 16+ large screens, Android itself ignores fixed portrait/landscape requests unless the app default is restored in the system aspect-ratio settings; Free keeps sensor rotation |
 
 </details>
 

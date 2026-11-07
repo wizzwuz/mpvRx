@@ -14,6 +14,7 @@ import app.gyrolet.mpvrx.R
 import app.gyrolet.mpvrx.presentation.Screen
 import app.gyrolet.mpvrx.ui.background.BackgroundType
 import app.gyrolet.mpvrx.ui.background.RandomInterval
+import app.gyrolet.mpvrx.domain.motion.MotionInterpolation
 import app.gyrolet.mpvrx.ui.browser.music.MusicTab
 import app.gyrolet.mpvrx.ui.securefolder.SecureFolderSettingsScreen
 import java.text.Normalizer
@@ -719,6 +720,15 @@ object SearchablePreferences {
       )
       add(
         SearchablePreference(
+          titleRes = R.string.pref_gesture_require_double_tap_title,
+          summaryRes = R.string.pref_gesture_require_double_tap_summary,
+          keywords = listOf("seek", "double tap", "strict", "single tap", "continuous", "youtube", "repeat"),
+          category = "Gestures",
+          screen = GesturePreferencesScreen,
+        ),
+      )
+      add(
+        SearchablePreference(
           titleRes = R.string.pref_double_tap_seek_area_width_title,
           summaryRes = R.string.pref_double_tap_seek_area_width_summary,
           keywords = listOf("area", "width", "single tap", "double tap", "seek", "region", "percent"),
@@ -1146,6 +1156,33 @@ object SearchablePreferences {
           screen = AudioPreferencesScreen,
         ),
       )
+      if (app.gyrolet.mpvrx.BuildConfig.MPV_SUPPORTS_OMNIPHONY) {
+        add(
+          SearchablePreference(
+            titleRes = R.string.pref_omniphony_title,
+            summaryRes = R.string.pref_omniphony_summary,
+            keywords =
+              listOf(
+                "omniphony",
+                "atmos",
+                "dolby",
+                "truehd",
+                "dts",
+                "iamf",
+                "object",
+                "binaural",
+                "headphones",
+                "hrtf",
+                "sofa",
+                "surround",
+                "speakers",
+                "harletty",
+              ),
+            category = "Audio",
+            screen = AudioPreferencesScreen,
+          ),
+        )
+      }
       add(
         SearchablePreference(
           titleRes = R.string.pref_audio_volume_normalization_title,
@@ -1430,7 +1467,7 @@ object SearchablePreferences {
       add(
         SearchablePreference(
           titleRes = R.string.pref_ai_provider_title,
-          summary = "Choose OpenCode, Groq, OpenAI, Anthropic, OpenRouter, or Together",
+          summary = "Choose OpenCode, Groq, OpenAI, Anthropic, OpenRouter, Together, or a custom OpenAI-compatible provider",
           keywords =
             listOf(
               "provider",
@@ -1440,6 +1477,9 @@ object SearchablePreferences {
               "anthropic",
               "together",
               "openrouter",
+              "custom",
+              "compatible",
+              "base url",
               "local",
               "offline",
               "api",
@@ -1455,6 +1495,36 @@ object SearchablePreferences {
           keywords = listOf("api key", "key", "authentication", "token", "verify", "opencode", "groq", "openai"),
           category = "AI",
           screen = AiIntegrationScreen,
+        ),
+      )
+      add(
+        SearchablePreference(
+          titleRes = R.string.pref_custom_openai_base_url_title,
+          summaryRes = R.string.pref_custom_openai_base_url_summary,
+          keywords = listOf("custom", "openai", "compatible", "base url", "endpoint", "self hosted", "ollama", "lm studio"),
+          category = "AI",
+          screen = AiIntegrationScreen,
+          targetRes = R.string.pref_ai_provider_title,
+        ),
+      )
+      add(
+        SearchablePreference(
+          titleRes = R.string.pref_custom_openai_key_title,
+          summaryRes = R.string.pref_custom_openai_key_summary,
+          keywords = listOf("custom", "openai", "api key", "authentication", "token"),
+          category = "AI",
+          screen = AiIntegrationScreen,
+          targetRes = R.string.pref_ai_provider_title,
+        ),
+      )
+      add(
+        SearchablePreference(
+          titleRes = R.string.pref_custom_openai_model_title,
+          summaryRes = R.string.pref_custom_openai_model_summary,
+          keywords = listOf("custom", "openai", "model id", "manual", "discovery"),
+          category = "AI",
+          screen = AiIntegrationScreen,
+          targetRes = R.string.pref_ai_provider_title,
         ),
       )
       add(
@@ -1713,6 +1783,17 @@ object SearchablePreferences {
         SearchEntrySpec(R.string.pref_anime4k_thin_title, listOf("anime4k", "thin", "lines"), R.string.pref_anime4k_title),
         SearchEntrySpec(R.string.pref_anime4k_deblur_title, listOf("anime4k", "deblur", "sharp"), R.string.pref_anime4k_title),
       )
+      if (MotionInterpolation.isBuildSupported) {
+        addSearchEntries(
+          category = "Decoder",
+          screen = DecoderPreferencesScreen,
+          anchorItemIndex = 3,
+          SearchEntrySpec(R.string.motion_title, listOf("motion", "interpolation", "memc", "smooth", "fps", "60fps", "frame")),
+          SearchEntrySpec(R.string.motion_target_title, listOf("target", "fps", "auto", "refresh rate", "motion"), R.string.motion_title),
+          SearchEntrySpec(R.string.motion_target_fps_title, listOf("target", "fps", "custom", "motion"), R.string.motion_title),
+          SearchEntrySpec(R.string.motion_switch_display_title, listOf("refresh rate", "display", "hz", "motion"), R.string.motion_title),
+        )
+      }
 
       addSearchEntries(
         category = "Audio",

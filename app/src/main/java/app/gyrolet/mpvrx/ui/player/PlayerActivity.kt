@@ -22,7 +22,6 @@ import android.content.ServiceConnection
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
-import android.content.res.Resources
 import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -689,6 +688,9 @@ class PlayerActivity :
     }
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && !isKnownAudioLaunch(intent)) {
+      applyLegacySystemBars(showStatus = false, showNavigation = false, isAudio = false)
+    }
     // Kick the multi-MB asset copy and the user mpv.conf SAF walk off the main thread first, so
     // they run concurrently with everything below instead of being joined inside setupMPV().
     startMpvAssetPreparation()
@@ -918,6 +920,7 @@ class PlayerActivity :
     setupVideoAmbientBackground()
     setupPlayerControls()
     setupAudioPlayerViewObserver()
+    setupMotionInterpolationObserver()
     setupMediaSession()
     lifecycleScope.launch {
       thumbnailRepository.cacheRevision.drop(1).collect {
@@ -1576,6 +1579,18 @@ class PlayerActivity :
     PlaybackSession.setPropertyFloat("video-pan-y", mpvPanY)
     viewModel.onAmbientGeometryChanged()
     applySubtitleBlendMode()
+  }
+
+  /** Motion interpolation changes the rate the display should run at, so renegotiate it. */
+  private fun setupMotionInterpolationObserver() {
+    if (!app.gyrolet.mpvrx.domain.motion.MotionInterpolation.isBuildSupported) return
+    lifecycleScope.launch {
+      repeatOnLifecycle(Lifecycle.State.STARTED) {
+        viewModel.motionInterpolation.state.collect {
+          if (mpvInitialized && !player.isExiting && !isFinishing) player.updateFrameRate()
+        }
+      }
+    }
   }
 
   private fun setupAudioPlayerViewObserver() {
@@ -2500,6 +2515,7 @@ class PlayerActivity :
   override fun onStart() {
     super.onStart()
     playbackActivityStarted = true
+    if (::pipHelper.isInitialized && ownsPlaybackSession()) pipHelper.onStart()
     onPlaybackStarted()
   }
 
@@ -2696,27 +2712,44 @@ class PlayerActivity :
     val showNavigation = isAudio || (controlsVisible && playerPreferences.showSystemNavigationBar.get())
 
     try {
-      // WindowInsetsControllerCompat translates this into the legacy fullscreen/navigation flags
-      // on Android 8-10 and uses WindowInsetsController on Android 11+. Keep immersive behavior
-      // even when only one of the two system bars is hidden.
-      windowInsetsController.apply {
-        systemBarsBehavior =
-          if (isAudio) WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
-          else WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+        applyLegacySystemBars(showStatus, showNavigation, isAudio)
+      } else {
+        windowInsetsController.apply {
+          systemBarsBehavior =
+            if (isAudio) WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+            else WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
-        if (showStatus) show(WindowInsetsCompat.Type.statusBars())
-        else hide(WindowInsetsCompat.Type.statusBars())
+          if (showStatus) show(WindowInsetsCompat.Type.statusBars())
+          else hide(WindowInsetsCompat.Type.statusBars())
 
-        if (showNavigation) show(WindowInsetsCompat.Type.navigationBars())
-        else hide(WindowInsetsCompat.Type.navigationBars())
+          if (showNavigation) show(WindowInsetsCompat.Type.navigationBars())
+          else hide(WindowInsetsCompat.Type.navigationBars())
 
-        isAppearanceLightStatusBars = false
-        isAppearanceLightNavigationBars = false
+          isAppearanceLightStatusBars = false
+          isAppearanceLightNavigationBars = false
+        }
       }
     } catch (e: Exception) {
       Log.e(TAG, "Failed to update player system bars", e)
     }
     updateStatusBarProtection()
+  }
+
+  @Suppress("DEPRECATION")
+  private fun applyLegacySystemBars(showStatus: Boolean, showNavigation: Boolean, isAudio: Boolean) {
+    val layoutFlags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+      View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+    val managedFlags = layoutFlags or View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+      View.SYSTEM_UI_FLAG_IMMERSIVE or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+      View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+    var requestedFlags = layoutFlags
+    if (!showStatus) requestedFlags = requestedFlags or View.SYSTEM_UI_FLAG_FULLSCREEN
+    if (!showNavigation) requestedFlags = requestedFlags or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+    if (!isAudio) requestedFlags = requestedFlags or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+    window.decorView.apply {
+      systemUiVisibility = (systemUiVisibility and managedFlags.inv()) or requestedFlags
+    }
   }
 
   private fun setupSystemUI() {
@@ -4896,6 +4929,8 @@ class PlayerActivity :
           playWhenFileLoaded = false
         }
         viewModel.onVideoLoadCompleted()
+        // The renderer and GPU support are only known once a file has started.
+        viewModel.motionInterpolation.refresh()
         handleFileLoaded(loadGeneration)
         scheduleDeferredUserMpvAssetRefresh()
         if (isBackgroundPlaybackEnabled()) {
@@ -6870,16 +6905,25 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
 
   // ==================== Orientation Management ====================
 
-  private fun usesAdaptiveOrientation(): Boolean {
-    if (isTelevision) return false
-    // PiP is multi-window with a tiny window; it must keep the phone's orientation for the way back.
-    if (isInPictureInPictureMode) return Resources.getSystem().configuration.smallestScreenWidthDp >= 600
-    return isInMultiWindowMode || resources.configuration.smallestScreenWidthDp >= 600
-  }
+  /**
+   * Only a split-screen or freeform window hands orientation to the system: it cannot rotate the
+   * display, and a fixed request would letterbox the player inside it.
+   *
+   * Display size must never decide this (#959). Android 15 and earlier honor orientation requests on
+   * tablets and foldables exactly as on phones. From Android 16 the platform itself ignores fixed
+   * portrait/landscape requests on large screens, unless the user restores the app default in the
+   * system aspect-ratio settings, while `sensor` ("Free") is always honored. Replacing requests with
+   * unspecified on large screens made every mode follow the system rotation lock instead.
+   *
+   * PiP also reports multi-window but keeps the requested orientation, so Android expands straight
+   * back into the video's orientation.
+   */
+  private fun usesAdaptiveOrientation(): Boolean =
+    !isTelevision && isInMultiWindowMode && !isInPictureInPictureMode
 
   private fun updateOrientationForWindow() {
-    // Folding or entering split-screen can change whether a fixed orientation is appropriate.
-    // Do not reapply a phone preference on ordinary rotation: the rotation button overrides it.
+    // Entering split-screen or freeform hands orientation to the system; leaving it restores the
+    // player's. Do not reapply a preference on ordinary rotation: the rotation button overrides it.
     if (usesAdaptiveOrientation()) {
       requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     } else if (requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
@@ -6888,8 +6932,7 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
   }
 
   override fun setRequestedOrientation(requestedOrientation: Int) {
-    // Android 16 ignores fixed orientations on large displays. Apply the same adaptive behavior
-    // consistently on tablets/foldables and in multi-window, including rotation-button requests.
+    // Preference, launch and rotation-button requests all follow the window rule above.
     val target =
       if (usesAdaptiveOrientation()) ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED else requestedOrientation
     if (super.getRequestedOrientation() != target) super.setRequestedOrientation(target)

@@ -25,6 +25,26 @@ focus handling; playback may pause if focus cannot be acquired. Headphone
 disconnection still pauses playback. Other apps and the system may apply their own
 audio policies, so this option cannot guarantee that every app will mix audio.
 
+## Omniphony spatial audio
+
+**Audio settings → Omniphony spatial audio** renders Dolby Atmos (TrueHD and
+E-AC-3), DTS:X and IAMF tracks with the [Omniphony](https://github.com/mgth/Omniphony)
+engine: binaurally for headphones, with the built-in HRTF, your own SOFA HRTF or a
+measured room, or to a speaker layout from 5.1 to 7.1.4. It is available in the
+Standard, No Vulkan and FongMi builds.
+
+mpvRx does not include the engine. Build `liborender.so` and a decoder bridge such as
+[harletty-bridge](https://github.com/harletty/harletty-bridge) for your device's
+architecture, which the import row shows, then import the libraries or a `.zip` of
+them on that page and turn on **Use Omniphony**. Settings apply the next time the
+player opens; restart mpvRx after replacing an engine that was already in use.
+Tracks the engine cannot render keep playing through FFmpeg.
+
+:::warning
+Imported libraries run inside mpvRx with its permissions. Only import builds you
+trust.
+:::
+
 ## Music library
 
 The Music tab can use local storage, Jellyfin, or Navidrome as its source. Local browsing includes:

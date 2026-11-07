@@ -137,6 +137,9 @@ android {
       buildConfigField("boolean", "SCOPED_STORAGE_ONLY", "false")
       buildConfigField("boolean", "MPV_SUPPORTS_VULKAN", "true")
       buildConfigField("boolean", "MPV_SUPPORTS_MEDIACODEC_VULKAN", "false")
+      // FongMi's mpv ships the GPU motion interpolation core.
+      buildConfigField("boolean", "MPV_SUPPORTS_MOTION_INTERPOLATION", "false")
+      buildConfigField("boolean", "MPV_SUPPORTS_OMNIPHONY", "true")
     }
 
     create("playstore") {
@@ -147,6 +150,10 @@ android {
       buildConfigField("boolean", "SCOPED_STORAGE_ONLY", "true")
       buildConfigField("boolean", "MPV_SUPPORTS_VULKAN", "true")
       buildConfigField("boolean", "MPV_SUPPORTS_MEDIACODEC_VULKAN", "false")
+      // FongMi's mpv ships the GPU motion interpolation core.
+      buildConfigField("boolean", "MPV_SUPPORTS_MOTION_INTERPOLATION", "false")
+      // Omniphony runs user-imported native libraries, which Play policy does not allow.
+      buildConfigField("boolean", "MPV_SUPPORTS_OMNIPHONY", "false")
     }
 
     create("noVulkan") {
@@ -157,6 +164,9 @@ android {
       buildConfigField("boolean", "SCOPED_STORAGE_ONLY", "false")
       buildConfigField("boolean", "MPV_SUPPORTS_VULKAN", "false")
       buildConfigField("boolean", "MPV_SUPPORTS_MEDIACODEC_VULKAN", "false")
+      // FongMi's mpv ships the GPU motion interpolation core.
+      buildConfigField("boolean", "MPV_SUPPORTS_MOTION_INTERPOLATION", "false")
+      buildConfigField("boolean", "MPV_SUPPORTS_OMNIPHONY", "true")
     }
 
     create("fongmi") {
@@ -167,6 +177,9 @@ android {
       buildConfigField("boolean", "SCOPED_STORAGE_ONLY", "false")
       buildConfigField("boolean", "MPV_SUPPORTS_VULKAN", "true")
       buildConfigField("boolean", "MPV_SUPPORTS_MEDIACODEC_VULKAN", "true")
+      // FongMi's mpv ships the GPU motion interpolation core.
+      buildConfigField("boolean", "MPV_SUPPORTS_MOTION_INTERPOLATION", "true")
+      buildConfigField("boolean", "MPV_SUPPORTS_OMNIPHONY", "true")
     }
 
     configureEach {
@@ -473,7 +486,6 @@ dependencies {
   implementation(libs.androidx.biometric)
   implementation(libs.telephoto.zoomable)
   implementation(libs.haze.blur)
-  implementation(libs.sonner)
   implementation(libs.kyant.backdrop)
   implementation(libs.kyant.shapes)
 
