@@ -1817,6 +1817,8 @@ internal fun userScriptsNeedReload(currentKey: String): Boolean {
     ) return false
     if (MPVLib.getPropertyInt("audio-params/channel-count") != 2) return false
     if (MPVLib.getPropertyString("audio-channels") == "mono") return false
+    // Omniphony output is already rendered for the listener.
+    if (MPVLib.getPropertyString("current-tracks/audio/decoder") == "orender") return false
     // Encoded passthrough must reach the receiver unchanged.
     return MPVLib.getPropertyString("audio-params/format")?.startsWith("spdif") != true &&
       MPVLib.getPropertyString("audio-out-params/format")?.startsWith("spdif") != true

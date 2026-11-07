@@ -1156,6 +1156,33 @@ object SearchablePreferences {
           screen = AudioPreferencesScreen,
         ),
       )
+      if (app.gyrolet.mpvrx.BuildConfig.MPV_SUPPORTS_OMNIPHONY) {
+        add(
+          SearchablePreference(
+            titleRes = R.string.pref_omniphony_title,
+            summaryRes = R.string.pref_omniphony_summary,
+            keywords =
+              listOf(
+                "omniphony",
+                "atmos",
+                "dolby",
+                "truehd",
+                "dts",
+                "iamf",
+                "object",
+                "binaural",
+                "headphones",
+                "hrtf",
+                "sofa",
+                "surround",
+                "speakers",
+                "harletty",
+              ),
+            category = "Audio",
+            screen = AudioPreferencesScreen,
+          ),
+        )
+      }
       add(
         SearchablePreference(
           titleRes = R.string.pref_audio_volume_normalization_title,

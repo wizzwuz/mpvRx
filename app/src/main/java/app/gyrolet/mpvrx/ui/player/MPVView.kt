@@ -27,6 +27,7 @@ import app.gyrolet.mpvrx.domain.hdr.HdrToysManager
 import app.gyrolet.mpvrx.domain.motion.MotionAvailability
 import app.gyrolet.mpvrx.domain.motion.MotionConfig
 import app.gyrolet.mpvrx.domain.motion.MotionInterpolation
+import app.gyrolet.mpvrx.domain.omniphony.OmniphonyEngine
 import app.gyrolet.mpvrx.preferences.AdvancedPreferences
 import app.gyrolet.mpvrx.preferences.AppearancePreferences
 import app.gyrolet.mpvrx.preferences.AudioPreferences
@@ -81,6 +82,7 @@ class MPVView(
   private val ytdlPreferences: YtdlPreferences by inject()
   private val anime4kManager: Anime4KManager by inject()
   private val hdrToysManager: HdrToysManager by inject()
+  private val omniphonyEngine: OmniphonyEngine by inject()
 
   var isExiting = false
   private var lastRequestedFrameRate = Float.NaN
@@ -191,7 +193,8 @@ class MPVView(
     val scriptsKey = advancedPreferences.userScriptsConfigurationKey()
     val coreConfigurationKey =
       "${requestedBackend.configurationKey}|conf=${MpvConfigOverridePolicy.configurationKey()}" +
-        "|mpv=${mpvConfigCache.configurationKey()}|scripts=$scriptsKey"
+        "|mpv=${mpvConfigCache.configurationKey()}|scripts=$scriptsKey" +
+        "|omniphony=${inputs.omniphony?.configurationKey ?: "off"}"
     return PlaybackSession.initialize(
       context = context.applicationContext,
       configDir = configDir,
@@ -324,6 +327,7 @@ class MPVView(
     val subtitleOptionValues: List<Pair<String, String>>,
     val audioOptionValues: List<Pair<String, String>>,
     val motionInterpolation: MotionConfig,
+    val omniphony: OmniphonyEngine.Setup?,
   )
 
   @Volatile
@@ -375,6 +379,7 @@ class MPVView(
       subtitleOptionValues = computeSubtitleOptionValues(),
       audioOptionValues = computeAudioOptionValues(),
       motionInterpolation = MotionInterpolation.config(decoderPreferences),
+      omniphony = if (BuildConfig.MPV_SUPPORTS_OMNIPHONY) omniphonyEngine.prepare() else null,
     )
   }
 
@@ -555,6 +560,7 @@ class MPVView(
 
     setupSubtitlesOptions()
     setupAudioOptions()
+    setupOmniphonyOptions(inputs.omniphony)
     // The built-in hook reads script-opts when MPVLib.init() creates it.
     YtdlpManager.configureMpvHookBeforeInit(context)
     // Restore 2.7.2's bridge environment and extractor options before the first load.
@@ -625,6 +631,11 @@ class MPVView(
       Debanding.GPU -> PlaybackSession.setOptionString("deband", "yes")
     }
 
+    // The engine's object overlay client starts with the core and is shown by default.
+    omniphonyOverlay?.let { show ->
+      PlaybackSession.command("script-message", "omniphony-overlay", if (show) "enable" else "disable")
+    }
+    omniphonyOverlay = null
   }
 
   fun applyOsdSafeAreaMargins(insets: WindowInsetsCompat? = null) {
@@ -976,6 +987,22 @@ class MPVView(
     awaitInitInputs().audioOptionValues.forEach { (property, value) ->
       PlaybackSession.setOptionString(property, value)
     }
+  }
+
+  private var omniphonyOverlay: Boolean? = null
+
+  /** Routes Atmos, DTS:X and IAMF through the Omniphony engine when it is set up. */
+  private fun setupOmniphonyOptions(setup: OmniphonyEngine.Setup?) {
+    omniphonyOverlay = null
+    if (setup == null) return
+    // A libmpv without ad_orender rejects the option; playback then keeps FFmpeg's decoders.
+    if (PlaybackSession.setOptionString("ad-orender-library", setup.libraryPath) < 0) {
+      Log.w(TAG, "This libmpv has no Omniphony decoder")
+      return
+    }
+    PlaybackSession.setOptionString("ad-orender-config", setup.configPath)
+    PlaybackSession.setOptionString("ad", "orender")
+    omniphonyOverlay = setup.showOverlay
   }
 
   fun applyAnime4KShaders() {

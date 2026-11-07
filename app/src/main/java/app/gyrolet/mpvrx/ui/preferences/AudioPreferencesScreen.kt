@@ -53,9 +53,11 @@ import app.gyrolet.mpvrx.preferences.MediaLibraryType
 import app.gyrolet.mpvrx.preferences.PlayerPreferences
 import app.gyrolet.mpvrx.preferences.preference.collectAsState
 import app.gyrolet.mpvrx.presentation.Screen
+import app.gyrolet.mpvrx.ui.preferences.components.AppPreference
 import app.gyrolet.mpvrx.ui.preferences.components.SwitchPreference
 import app.gyrolet.mpvrx.ui.utils.LocalBackStack
 import app.gyrolet.mpvrx.ui.utils.currentMpvConfigOverrideOptions
+import app.gyrolet.mpvrx.ui.utils.navigateTo
 import app.gyrolet.mpvrx.ui.utils.popSafely
 import app.gyrolet.mpvrx.utils.media.MediaLibraryEvents
 import kotlinx.serialization.Serializable
@@ -499,6 +501,23 @@ object AudioPreferencesScreen : Screen {
                   )
                 },
               )
+
+              if (app.gyrolet.mpvrx.BuildConfig.MPV_SUPPORTS_OMNIPHONY) {
+                PreferenceDivider()
+                ExpressivePreferenceItem {
+                  AppPreference(
+                    modifier = Modifier.settingsSearchTarget(R.string.pref_omniphony_title),
+                    title = { Text(stringResource(R.string.pref_omniphony_title)) },
+                    summary = {
+                      Text(
+                        stringResource(R.string.pref_omniphony_summary),
+                        color = MaterialTheme.colorScheme.outline,
+                      )
+                    },
+                    onClick = { backstack.navigateTo(OmniphonyPreferencesScreen) },
+                  )
+                }
+              }
 
               PreferenceDivider()
               val drcEnabled by preferences.drcEnabled.collectAsState()

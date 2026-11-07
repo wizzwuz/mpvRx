@@ -36,6 +36,15 @@ class AudioPreferences(
   val miniPlayerTrackSwitching = preferenceStore.getBoolean("audio_mini_player_track_switching", false)
   val volumeNormalization = preferenceStore.getBoolean("audio_volume_normalization", false)
   val spatialAudio = preferenceStore.getBoolean("audio_spatial_audio", false)
+  val omniphonyEnabled = preferenceStore.getBoolean("audio_omniphony_enabled", false)
+  val omniphonyOutputMode = preferenceStore.getEnum("audio_omniphony_output_mode", OmniphonyOutputMode.Binaural)
+  val omniphonySpeakerLayout =
+    preferenceStore.getEnum("audio_omniphony_speaker_layout", OmniphonySpeakerLayout.Surround51)
+  val omniphonyHeadphoneRendering =
+    preferenceStore.getEnum("audio_omniphony_headphone_rendering", OmniphonyHeadphoneRendering.BuiltIn)
+  val omniphonyRoomSimulation = preferenceStore.getBoolean("audio_omniphony_room_simulation", false)
+  val omniphonySpatializeChannels = preferenceStore.getBoolean("audio_omniphony_spatialize_channels", true)
+  val omniphonyOverlay = preferenceStore.getBoolean("audio_omniphony_overlay", false)
   val drcEnabled = preferenceStore.getBoolean("audio_drc_enabled", false)
   val equalizerEnabled = preferenceStore.getBoolean("audio_equalizer_enabled", false)
   val equalizerMode = preferenceStore.getString("audio_equalizer_mode", "DYNAMIC")
@@ -155,6 +164,63 @@ enum class AudioVisualizerStyle(
   Galaxy(R.string.pref_audio_visualizer_style_galaxy),
   Cuboid(R.string.pref_audio_visualizer_style_cuboid),
   Particle(R.string.pref_audio_visualizer_style_particle),
+}
+
+enum class OmniphonyOutputMode(
+  @StringRes val title: Int,
+) {
+  Binaural(R.string.pref_omniphony_output_binaural),
+  Speakers(R.string.pref_omniphony_output_speakers),
+}
+
+/** Omniphony speaker layouts in normalized room coordinates, LFE never spatialized. */
+enum class OmniphonySpeakerLayout(
+  val label: String,
+  val speakers: List<OmniphonySpeaker>,
+) {
+  Surround51("5.1", OmniphonySpeaker.bed(sides = false)),
+  Surround71("7.1", OmniphonySpeaker.bed(sides = true)),
+  Surround512("5.1.2", OmniphonySpeaker.bed(sides = false) + OmniphonySpeaker.frontHeights),
+  Surround712("7.1.2", OmniphonySpeaker.bed(sides = true) + OmniphonySpeaker.frontHeights),
+  Surround714(
+    "7.1.4",
+    OmniphonySpeaker.bed(sides = true) + OmniphonySpeaker.frontHeights + OmniphonySpeaker.rearHeights,
+  ),
+}
+
+data class OmniphonySpeaker(
+  val name: String,
+  val x: Float,
+  val y: Float,
+  val z: Float,
+  val spatialize: Boolean = true,
+) {
+  companion object {
+    fun bed(sides: Boolean): List<OmniphonySpeaker> =
+      buildList {
+        add(OmniphonySpeaker("FL", -1f, 1f, 0f))
+        add(OmniphonySpeaker("FR", 1f, 1f, 0f))
+        add(OmniphonySpeaker("C", 0f, 1f, 0f))
+        add(OmniphonySpeaker("LFE", 1f, 1f, -1f, spatialize = false))
+        if (sides) {
+          add(OmniphonySpeaker("SL", -1f, 0f, 0f))
+          add(OmniphonySpeaker("SR", 1f, 0f, 0f))
+        }
+        add(OmniphonySpeaker("BL", -1f, -1f, 0f))
+        add(OmniphonySpeaker("BR", 1f, -1f, 0f))
+      }
+
+    val frontHeights = listOf(OmniphonySpeaker("TFL", -1f, 1f, 1f), OmniphonySpeaker("TFR", 1f, 1f, 1f))
+    val rearHeights = listOf(OmniphonySpeaker("TBL", -1f, -1f, 1f), OmniphonySpeaker("TBR", 1f, -1f, 1f))
+  }
+}
+
+enum class OmniphonyHeadphoneRendering(
+  @StringRes val title: Int,
+) {
+  BuiltIn(R.string.pref_omniphony_headphones_builtin),
+  PersonalHrtf(R.string.pref_omniphony_headphones_hrtf),
+  MeasuredRoom(R.string.pref_omniphony_headphones_brir),
 }
 
 

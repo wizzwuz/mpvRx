@@ -139,6 +139,7 @@ android {
       buildConfigField("boolean", "MPV_SUPPORTS_MEDIACODEC_VULKAN", "false")
       // FongMi's mpv ships the GPU motion interpolation core.
       buildConfigField("boolean", "MPV_SUPPORTS_MOTION_INTERPOLATION", "false")
+      buildConfigField("boolean", "MPV_SUPPORTS_OMNIPHONY", "true")
     }
 
     create("playstore") {
@@ -151,6 +152,8 @@ android {
       buildConfigField("boolean", "MPV_SUPPORTS_MEDIACODEC_VULKAN", "false")
       // FongMi's mpv ships the GPU motion interpolation core.
       buildConfigField("boolean", "MPV_SUPPORTS_MOTION_INTERPOLATION", "false")
+      // Omniphony runs user-imported native libraries, which Play policy does not allow.
+      buildConfigField("boolean", "MPV_SUPPORTS_OMNIPHONY", "false")
     }
 
     create("noVulkan") {
@@ -163,6 +166,7 @@ android {
       buildConfigField("boolean", "MPV_SUPPORTS_MEDIACODEC_VULKAN", "false")
       // FongMi's mpv ships the GPU motion interpolation core.
       buildConfigField("boolean", "MPV_SUPPORTS_MOTION_INTERPOLATION", "false")
+      buildConfigField("boolean", "MPV_SUPPORTS_OMNIPHONY", "true")
     }
 
     create("fongmi") {
@@ -175,6 +179,7 @@ android {
       buildConfigField("boolean", "MPV_SUPPORTS_MEDIACODEC_VULKAN", "true")
       // FongMi's mpv ships the GPU motion interpolation core.
       buildConfigField("boolean", "MPV_SUPPORTS_MOTION_INTERPOLATION", "true")
+      buildConfigField("boolean", "MPV_SUPPORTS_OMNIPHONY", "true")
     }
 
     configureEach {
