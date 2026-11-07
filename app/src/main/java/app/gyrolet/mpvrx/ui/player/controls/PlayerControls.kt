@@ -173,7 +173,6 @@ import app.gyrolet.mpvrx.ui.player.controls.components.LocalForceDarkPlayerButto
 import app.gyrolet.mpvrx.ui.player.controls.components.LocalPlayerButtonsOpacity
 import app.gyrolet.mpvrx.ui.player.controls.components.asPlayerButtonBackground
 import app.gyrolet.mpvrx.ui.player.controls.components.MediaScopesOverlay
-import app.gyrolet.mpvrx.ui.player.controls.components.fadingHorizontalScroll
 import app.gyrolet.mpvrx.ui.player.controls.components.MultipleSpeedPlayerUpdate
 import app.gyrolet.mpvrx.ui.player.controls.components.ResumeAvailablePlayerUpdate
 import app.gyrolet.mpvrx.ui.player.controls.components.ResumedFromPlayerUpdate
@@ -2022,8 +2021,7 @@ fun PlayerControls(
               Box(Modifier.width(landscapePlaybackWidth).height(playPauseSize))
             } else if (hasPlaylistControls) {
               androidx.compose.foundation.layout.Row(
-                modifier = (if (fullWidthPlaybackRow) Modifier.fillMaxWidth() else Modifier)
-                  .fadingHorizontalScroll(rememberScrollState(), shadowRoom = 0.dp),
+                modifier = if (fullWidthPlaybackRow) Modifier.fillMaxWidth() else Modifier,
                 horizontalArrangement =
                   Arrangement.spacedBy(playbackButtonGap, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically,
@@ -2369,13 +2367,15 @@ fun PlayerControls(
                   },
                 ).constrainAs(topRightControls) {
                   top.linkTo(parent.top, spacing.small)
+                  start.linkTo(parent.start, spacing.large + LandscapeActionSize + spacing.small)
                   end.linkTo(parent.end, spacing.large)
+                  width = Dimension.preferredWrapContent
+                  horizontalBias = 1f
                 },
           ) {
             PlayerButtonTheme {
               LandscapeActionGroup(
                 buttons = topRightButtons,
-                modifier = Modifier.widthIn(max = resolveLandscapeHeaderMaxWidth(controlsWidth)),
                 endAligned = true,
                 fillWidth = false,
                 renderButton = renderLandscapeButton,
