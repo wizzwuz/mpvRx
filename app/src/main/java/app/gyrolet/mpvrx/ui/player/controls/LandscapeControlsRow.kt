@@ -4,8 +4,10 @@ package app.gyrolet.mpvrx.ui.player.controls
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
@@ -14,6 +16,7 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.gyrolet.mpvrx.preferences.PlayerButton
+import app.gyrolet.mpvrx.ui.player.controls.components.fadingHorizontalScroll
 
 internal val LandscapeActionSize = 48.dp
 internal val LandscapeActionGap = 8.dp
@@ -52,6 +55,30 @@ internal fun LandscapeControlsRow(
   renderButton: @Composable (PlayerButton) -> Unit,
   playbackControls: @Composable () -> Unit,
 ) {
+  if (playbackWidth > 0.dp) {
+    Row(
+      modifier = modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(LandscapeActionGap),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      LandscapeActionGroup(
+        buttons = leftButtons,
+        modifier = Modifier.weight(1f).then(leftModifier)
+          .fadingHorizontalScroll(rememberScrollState(), shadowRoom = 0.dp),
+        renderButton = renderButton,
+      )
+      Box(Modifier.width(playbackWidth), contentAlignment = Alignment.Center) { playbackControls() }
+      LandscapeActionGroup(
+        buttons = rightButtons,
+        modifier = Modifier.weight(1f).then(rightModifier)
+          .fadingHorizontalScroll(rememberScrollState(), reverseScrolling = true, shadowRoom = 0.dp),
+        endAligned = true,
+        renderButton = renderButton,
+      )
+    }
+    return
+  }
+
   Layout(
     modifier = modifier.fillMaxWidth(),
     content = {

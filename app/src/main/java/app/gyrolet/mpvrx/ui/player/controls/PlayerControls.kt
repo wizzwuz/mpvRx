@@ -1133,7 +1133,10 @@ fun PlayerControls(
         LocalLayoutDirection provides LayoutDirection.Ltr,
       ) {
         val density = LocalDensity.current
-        val bottomHeights = remember(isPortrait) { BottomClusterHeights() }
+        // One cache per orientation, so a rotation bounce on resume reuses real heights instead of fallbacks.
+        val portraitHeights = remember { BottomClusterHeights() }
+        val landscapeHeights = remember { BottomClusterHeights() }
+        val bottomHeights = if (isPortrait) portraitHeights else landscapeHeights
 
         ConstraintLayout(
           modifier =
@@ -1220,27 +1223,24 @@ fun PlayerControls(
 
           // Keep the seekbar close to its controls. Bands come from remembered heights, so a
           // layer leaving the layout (buffering, volume/brightness sliders, hidden controls) moves nothing.
-          // Subtract transparent glass shadow room when positioning portrait bands.
-          // Keep the visible bottom edge and inter-section gaps at 12dp, regardless of glass.
-          fun portraitInset(slot: BottomSlot?): Dp =
-            if (isPortrait) portraitGlassShadowRoom(slot, enableLiquidGlass) else 0.dp
-
-          val clusterEdge =
-            if (isPortrait) {
-              PortraitSectionGap - portraitInset(bottomStack.firstOrNull { bandHeight(it) > 0.dp })
-            } else {
-              spacing.medium
+          fun shadowInset(slot: BottomSlot?): Dp =
+            when {
+              isPortrait -> portraitGlassShadowRoom(slot, enableLiquidGlass)
+              enableLiquidGlass && slot == BottomSlot.Playback -> PlaybackShadowRoom
+              else -> 0.dp
             }
-          val clusterGap = if (isPortrait) PortraitSectionGap else spacing.extraSmall
-          val customButtonsGap = spacing.smaller * 2
+
+          val clusterEdge = PlayerSectionGap - shadowInset(bottomStack.firstOrNull { bandHeight(it) > 0.dp })
+          val clusterGap = PlayerSectionGap
+          val customButtonsGap = PlayerSectionGap
           val bandCenters = HashMap<BottomSlot, Dp>()
           var nextBandBottom = clusterEdge
           var bottomClusterTop = clusterEdge
           var previousVisibleSlot: BottomSlot? = null
           for (slot in bottomStack) {
             val height = bandHeight(slot)
-            if (height > 0.dp && isPortrait && previousVisibleSlot != null) {
-              nextBandBottom -= portraitInset(previousVisibleSlot) + portraitInset(slot)
+            if (height > 0.dp && previousVisibleSlot != null) {
+              nextBandBottom -= shadowInset(previousVisibleSlot) + shadowInset(slot)
             }
             bandCenters[slot] = nextBandBottom + height / 2
             if (height > 0.dp) {
@@ -1701,7 +1701,7 @@ fun PlayerControls(
                 bottom.linkTo(parent.bottom, customRowBottomOffset)
                 width = Dimension.preferredWrapContent
                 height = Dimension.wrapContent
-              }.onSizeChanged { bottomHeights.leftCustomRow = it.height },
+              }.onSizeChanged { if (it.height > 0) bottomHeights.leftCustomRow = it.height },
           ) {
             Row(
               horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1741,7 +1741,7 @@ fun PlayerControls(
                   bottom.linkTo(parent.bottom, customRowBottomOffset)
                   width = Dimension.preferredWrapContent
                   height = Dimension.wrapContent
-                }.onSizeChanged { bottomHeights.rightCustomRow = it.height },
+                }.onSizeChanged { if (it.height > 0) bottomHeights.rightCustomRow = it.height },
           ) {
             Row(
               horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1782,7 +1782,7 @@ fun PlayerControls(
                   bottom.linkTo(parent.bottom, customRowBottomOffset)
                   width = Dimension.fillToConstraints
                   height = Dimension.wrapContent
-                }.onSizeChanged { bottomHeights.rightCustomRow = it.height },
+                }.onSizeChanged { if (it.height > 0) bottomHeights.rightCustomRow = it.height },
           ) {
             Row(
               horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -2163,20 +2163,22 @@ fun PlayerControls(
                   linkInBottomStack(BottomSlot.Playback)
                 }
                 if (sharedLandscapeRow || fullWidthPlaybackRow) width = Dimension.fillToConstraints
-              }.onSizeChanged { bottomHeights.playback = it.height }
-                .padding(vertical = playbackShadowRoom),
+              },
           ) {
-            if (!sharedLandscapeRow) {
-              playbackControls()
-            } else {
-              PlayerButtonTheme {
-                LandscapeControlsRow(
-                  leftButtons = bottomLeftButtons,
-                  rightButtons = if (automaticQualityButton) bottomRightButtons + PlayerButton.VIDEO_QUALITY else bottomRightButtons,
-                  playbackWidth = landscapePlaybackWidth,
-                  renderButton = renderLandscapeButton,
-                  playbackControls = playbackControls,
-                )
+            Box(Modifier.onSizeChanged { if (it.height > 0) bottomHeights.playback = it.height }
+              .padding(vertical = playbackShadowRoom)) {
+              if (!sharedLandscapeRow) {
+                playbackControls()
+              } else {
+                PlayerButtonTheme {
+                  LandscapeControlsRow(
+                    leftButtons = bottomLeftButtons,
+                    rightButtons = if (automaticQualityButton) bottomRightButtons + PlayerButton.VIDEO_QUALITY else bottomRightButtons,
+                    playbackWidth = landscapePlaybackWidth,
+                    renderButton = renderLandscapeButton,
+                    playbackControls = playbackControls,
+                  )
+                }
               }
             }
           }
@@ -2202,7 +2204,7 @@ fun PlayerControls(
                   linkInBottomStack(BottomSlot.Seekbar)
                   start.linkTo(parent.start, spacing.large)
                   end.linkTo(parent.end, spacing.large)
-                }.onSizeChanged { bottomHeights.seekbar = it.height },
+                },
           ) {
             val position by PlaybackSession.propInt["time-pos"].collectAsStateWithLifecycle()
             val precisePosition by viewModel.precisePosition.collectAsStateWithLifecycle()
@@ -2275,6 +2277,7 @@ fun PlayerControls(
               loopEnd = abLoopB?.toFloat(),
               bufferDuration = stableDemuxerCacheTime.takeIf { showBufferedRange && it > 0f },
               isPortrait = isPortrait,
+              modifier = Modifier.onSizeChanged { if (it.height > 0) bottomHeights.seekbar = it.height },
             )
           }
 
@@ -2367,7 +2370,7 @@ fun PlayerControls(
                   },
                 ).constrainAs(topRightControls) {
                   top.linkTo(parent.top, spacing.small)
-                  start.linkTo(parent.start, spacing.large + LandscapeActionSize + spacing.small)
+                  start.linkTo(parent.start, spacing.large + LandscapeActionSize + spacing.extraSmall)
                   end.linkTo(parent.end, spacing.large)
                   width = Dimension.preferredWrapContent
                   horizontalBias = 1f
@@ -2405,7 +2408,7 @@ fun PlayerControls(
                   end.linkTo(parent.end, horizontalMargin)
                   start.linkTo(parent.start, horizontalMargin)
                   width = Dimension.fillToConstraints
-                }.onSizeChanged { bottomHeights.rightButtons = it.height },
+                },
           ) {
             if (isPortrait) {
               BottomPlayerControlsPortrait(
@@ -2426,6 +2429,7 @@ fun PlayerControls(
                 activity = playerActivity,
                 alignToEnd = false,
                 horizontalArrangement = Arrangement.spacedBy(spacing.small, Alignment.CenterHorizontally),
+                modifier = Modifier.onSizeChanged { if (it.height > 0) bottomHeights.rightButtons = it.height },
               )
             } else {
               PlayerButtonTheme {
@@ -2433,6 +2437,7 @@ fun PlayerControls(
                   leftButtons = bottomLeftButtons,
                   rightButtons = if (automaticQualityButton) bottomRightButtons + PlayerButton.VIDEO_QUALITY else bottomRightButtons,
                   playbackWidth = 0.dp,
+                  modifier = Modifier.onSizeChanged { if (it.height > 0) bottomHeights.rightButtons = it.height },
                   renderButton = renderLandscapeButton,
                   playbackControls = {},
                 )
