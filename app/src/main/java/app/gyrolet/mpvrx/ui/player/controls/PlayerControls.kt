@@ -180,6 +180,7 @@ import app.gyrolet.mpvrx.ui.player.controls.components.SeekPlayerUpdate
 import app.gyrolet.mpvrx.ui.player.controls.components.SeekbarWithTimers
 import app.gyrolet.mpvrx.ui.player.controls.components.TextPlayerUpdate
 import app.gyrolet.mpvrx.ui.player.controls.components.VolumeSlider
+import app.gyrolet.mpvrx.ui.player.controls.components.fadingHorizontalScroll
 import app.gyrolet.mpvrx.ui.player.controls.components.playerButtonContentColor
 import app.gyrolet.mpvrx.ui.player.controls.components.rememberBufferingState
 import app.gyrolet.mpvrx.ui.player.controls.components.BufferingPhase
@@ -906,7 +907,8 @@ fun PlayerControls(
             hasChapters = chapters.isNotEmpty(),
             showQualityButton = showVideoQualitySelector,
             playbackSpeed = playbackSpeed ?: 1f,
-            skipSegmentLabel = currentSkippableSegment?.label,
+            decoder = decoder,
+            skipSegmentLabel = currentSkippableSegment?.type?.labelRes?.let { stringResource(it) },
             showBuffering = showBufferingIndicator,
             autoHideMillis = playerTimeToDisappear.toLong(),
             onOpenSheet = onOpenSheet,
@@ -1153,7 +1155,7 @@ fun PlayerControls(
               }.then(safeAreaInsetModifier)
               .then(navigationBarBottomInsetModifier),
           ) {
-          val (topLeftControls, topRightControls) = createRefs()
+          val topControls = createRef()
           val (volumeSlider, brightnessSlider) = createRefs()
           val unlockControlsButton = createRef()
           val bottomRightControls = createRef()
@@ -1455,6 +1457,12 @@ fun PlayerControls(
           // pills have twice the old 8dp clearance, independently of the tighter seekbar gaps.
           val customRowBottomOffset = bottomClusterTop + customButtonsGap - CustomButtonsRowInsetVertical
           val customRowEdgeMargin = spacing.large - CustomButtonsRowInsetHorizontal
+          val drawerEdgeClearance = if (showControlsDrawer) PlayerDrawerEdgeTouchWidth else 0.dp
+          val customRowLayoutDirection = LocalLayoutDirection.current
+          val leftCustomRowEdgeMargin = customRowEdgeMargin +
+            if (customRowLayoutDirection == LayoutDirection.Rtl) drawerEdgeClearance else 0.dp
+          val rightCustomRowEdgeMargin = customRowEdgeMargin +
+            if (customRowLayoutDirection == LayoutDirection.Ltr) drawerEdgeClearance else 0.dp
           val customRowAboveSkipChip =
             showLandscapeLeftCustomButtons || showLandscapeRightCustomButtons || showPortraitCustomButtons
           val customRowVisibleHeight =
@@ -1520,7 +1528,7 @@ fun PlayerControls(
                 ).constrainAs(playerUpdates) {
                   linkTo(parent.start, parent.end)
                   if (isPortrait && controlsShown && !areControlsLocked) {
-                    top.linkTo(topLeftControls.bottom, spacing.medium)
+                    top.linkTo(topControls.bottom, spacing.medium)
                   } else {
                     top.linkTo(parent.top, if (isPortrait) 104.dp else 64.dp)
                   }
@@ -1697,7 +1705,7 @@ fun PlayerControls(
             exit = buildControlsExitH(controlsAnimStyle, reduceMotion, exitMs) { -it },
             modifier =
               navigationStartPaddingModifier.constrainAs(customLeftButtonsRef) {
-                start.linkTo(parent.start, customRowEdgeMargin)
+                start.linkTo(parent.start, leftCustomRowEdgeMargin)
                 bottom.linkTo(parent.bottom, customRowBottomOffset)
                 width = Dimension.preferredWrapContent
                 height = Dimension.wrapContent
@@ -1737,7 +1745,7 @@ fun PlayerControls(
             modifier =
               navigationEndPaddingModifier
                 .constrainAs(customRightButtonsRef) {
-                  end.linkTo(parent.end, customRowEdgeMargin)
+                  end.linkTo(parent.end, rightCustomRowEdgeMargin)
                   bottom.linkTo(parent.bottom, customRowBottomOffset)
                   width = Dimension.preferredWrapContent
                   height = Dimension.wrapContent
@@ -1892,7 +1900,7 @@ fun PlayerControls(
                 height = 40.dp,
               ) {
                 Text(
-                  text = segment.label,
+                  text = stringResource(segment.type.labelRes),
                   style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                   color = segmentColor.copy(alpha = 1f),
                 )
@@ -1911,7 +1919,7 @@ fun PlayerControls(
                     },
               ) {
                 Text(
-                  text = segment.label,
+                  text = stringResource(segment.type.labelRes),
                   style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                   color = segmentColor.copy(alpha = 1f),
                   modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -2281,10 +2289,7 @@ fun PlayerControls(
             )
           }
 
-          AnimatedVisibility(
-            visible = controlsShown && !areControlsLocked && !areSlidersShown,
-            enter = buildControlsEnterH(controlsAnimStyle, reduceMotion, enterMs) { -it },
-            exit = buildControlsExitH(controlsAnimStyle, reduceMotion, exitMs) { -it },
+          Box(
             modifier =
               Modifier
                 .then(
@@ -2303,85 +2308,71 @@ fun PlayerControls(
                   } else {
                     Modifier
                   },
-                ).constrainAs(topLeftControls) {
+                ).constrainAs(topControls) {
                   top.linkTo(parent.top, if (isPortrait) spacing.extraLarge else spacing.small)
                   start.linkTo(parent.start, spacing.large)
-                  if (isPortrait) {
-                    width = Dimension.fillToConstraints
-                    end.linkTo(parent.end, spacing.large)
-                  } else {
-                    width = Dimension.fillToConstraints
-                    end.linkTo(topRightControls.start, spacing.extraSmall)
+                  end.linkTo(parent.end, spacing.large)
+                  width = Dimension.fillToConstraints
+                },
+          ) {
+            val titleControls: @Composable () -> Unit = {
+              AnimatedVisibility(
+                visible = controlsShown && !areControlsLocked && !areSlidersShown,
+                enter = buildControlsEnterH(controlsAnimStyle, reduceMotion, enterMs) { -it },
+                exit = buildControlsExitH(controlsAnimStyle, reduceMotion, exitMs) { -it },
+              ) {
+                val showAiIndicators = aiEnabled
+                val showRealtimeSubs = aiEnabled && realtimeSubsEnabled
+                if (isPortrait) {
+                  TopPlayerControlsPortrait(
+                    mediaTitle = mediaTitle,
+                    onBackPress = onBackPress,
+                    onOpenSheet = onOpenSheet,
+                    viewModel = viewModel,
+                    isTranslatingSub = showAiIndicators && isTranslatingSub,
+                    isRealtimeSubsActive = showRealtimeSubs && isRealtimeSubsActive,
+                    realtimeSubsLanguage = realtimeSubsLanguage,
+                    realtimeSubsStatus = realtimeSubsStatus,
+                    translationStatus = translationStatus,
+                    translatingTrackName = translatingTrackName,
+                  )
+                } else {
+                  TopLeftPlayerControlsLandscape(
+                    mediaTitle = mediaTitle,
+                    onBackPress = onBackPress,
+                    onOpenSheet = onOpenSheet,
+                    viewModel = viewModel,
+                    isTranslatingSub = showAiIndicators && isTranslatingSub,
+                    isRealtimeSubsActive = showRealtimeSubs && isRealtimeSubsActive,
+                    realtimeSubsLanguage = realtimeSubsLanguage,
+                    realtimeSubsStatus = realtimeSubsStatus,
+                    translationStatus = translationStatus,
+                    translatingTrackName = translatingTrackName,
+                  )
+                }
+              }
+            }
+            if (isPortrait) {
+              titleControls()
+            } else {
+              LandscapePlayerHeader(
+                title = titleControls,
+                actions = {
+                  AnimatedVisibility(
+                    visible = controlsShown && !areControlsLocked && !areSlidersShown,
+                    enter = buildControlsEnterH(controlsAnimStyle, reduceMotion, enterMs) { it },
+                    exit = buildControlsExitH(controlsAnimStyle, reduceMotion, exitMs) { it },
+                  ) {
+                    PlayerButtonTheme {
+                      LandscapeActionGroup(
+                        buttons = topRightButtons,
+                        endAligned = true,
+                        fillWidth = false,
+                        renderButton = renderLandscapeButton,
+                      )
+                    }
                   }
                 },
-          ) {
-            val showAiIndicators = aiEnabled
-            val showRealtimeSubs = aiEnabled && realtimeSubsEnabled
-            if (isPortrait) {
-              TopPlayerControlsPortrait(
-                mediaTitle = mediaTitle,
-                onBackPress = onBackPress,
-                onOpenSheet = onOpenSheet,
-                viewModel = viewModel,
-                isTranslatingSub = showAiIndicators && isTranslatingSub,
-                isRealtimeSubsActive = showRealtimeSubs && isRealtimeSubsActive,
-                realtimeSubsLanguage = realtimeSubsLanguage,
-                realtimeSubsStatus = realtimeSubsStatus,
-                translationStatus = translationStatus,
-                translatingTrackName = translatingTrackName,
-              )
-            } else {
-              TopLeftPlayerControlsLandscape(
-                mediaTitle = mediaTitle,
-                onBackPress = onBackPress,
-                onOpenSheet = onOpenSheet,
-                viewModel = viewModel,
-                isTranslatingSub = showAiIndicators && isTranslatingSub,
-                isRealtimeSubsActive = showRealtimeSubs && isRealtimeSubsActive,
-                realtimeSubsLanguage = realtimeSubsLanguage,
-                realtimeSubsStatus = realtimeSubsStatus,
-                translationStatus = translationStatus,
-                translatingTrackName = translatingTrackName,
-              )
-            }
-          }
-
-          AnimatedVisibility(
-            visible = controlsShown && !areControlsLocked && !isPortrait && !areSlidersShown,
-            enter = buildControlsEnterH(controlsAnimStyle, reduceMotion, enterMs) { it },
-            exit = buildControlsExitH(controlsAnimStyle, reduceMotion, exitMs) { it },
-            modifier =
-              Modifier
-                .then(
-                  if (showSystemStatusBar) {
-                    Modifier.windowInsetsPadding(WindowInsets.statusBars)
-                  } else {
-                    Modifier
-                  },
-                ).then(
-                  if (showSystemNavigationBar && !safeAreaWindow) {
-                    val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
-                    Modifier.padding(
-                      start = navBarPadding.calculateLeftPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
-                      end = navBarPadding.calculateRightPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
-                    )
-                  } else {
-                    Modifier
-                  },
-                ).constrainAs(topRightControls) {
-                  top.linkTo(parent.top, spacing.small)
-                  start.linkTo(parent.start, spacing.large + LandscapeActionSize + spacing.extraSmall)
-                  end.linkTo(parent.end, spacing.large)
-                  width = Dimension.preferredWrapContent
-                  horizontalBias = 1f
-                },
-          ) {
-            PlayerButtonTheme {
-              LandscapeActionGroup(
-                buttons = topRightButtons,
-                endAligned = true,
-                fillWidth = false,
-                renderButton = renderLandscapeButton,
               )
             }
           }
