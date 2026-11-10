@@ -102,7 +102,8 @@ fun PlayerSheets(
   onShowSheet: (Sheets) -> Unit,
   onDismissRequest: () -> Unit,
 ) {
-  val isTelevision = DeviceFormFactor.isTelevision(LocalContext.current)
+  val context = LocalContext.current
+  val isTelevision = DeviceFormFactor.isTelevision(context)
   val qualityDownloadAction = rememberQualityDownloadAction(viewModel)
   val advancedPreferences = koinInject<AdvancedPreferences>()
   val storedConfigOverrides by advancedPreferences.mpvConfOverrides.collectAsState()
@@ -455,6 +456,14 @@ fun PlayerSheets(
         onEnterFiltersPanel = { onOpenPanel(Panels.VideoFilters) },
         onEnterLuaScriptsPanel = { onOpenPanel(Panels.LuaScripts) },
         onEnterEqualizerSheet = { onShowSheet(Sheets.Equalizer) },
+        onOpenMediaInfo = {
+          (context as? app.gyrolet.mpvrx.ui.player.PlayerActivity)?.openMediaInfo()
+          onDismissRequest()
+        },
+        onDeleteCurrentVideo = {
+          viewModel.requestDeleteCurrentVideo()
+          onDismissRequest()
+        },
         anime4KUiState = anime4KUiState,
         onAnime4KModeSelected = viewModel::selectAnime4KMode,
         filtersEnabled = MpvConfigOverride.VIDEO_FILTERS.optionNames.any { it !in configOwnedOptions },

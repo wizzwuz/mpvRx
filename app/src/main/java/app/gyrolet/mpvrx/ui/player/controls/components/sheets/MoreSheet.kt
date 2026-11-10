@@ -29,6 +29,11 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -70,6 +75,8 @@ fun MoreSheet(
   onEnterFiltersPanel: () -> Unit,
   onEnterLuaScriptsPanel: () -> Unit,
   onEnterEqualizerSheet: (() -> Unit)? = null,
+  onOpenMediaInfo: (() -> Unit)? = null,
+  onDeleteCurrentVideo: (() -> Unit)? = null,
   anime4KUiState: Anime4KUiState,
   onAnime4KModeSelected: (Anime4KManager.Mode) -> Unit,
   filtersEnabled: Boolean = true,
@@ -271,6 +278,85 @@ fun MoreSheet(
                   selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
                 ),
           )
+        }
+      }
+
+      if (onOpenMediaInfo != null || onDeleteCurrentVideo != null) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.smaller),
+        ) {
+          if (onOpenMediaInfo != null) {
+            Surface(
+              modifier =
+                Modifier
+                  .weight(1f)
+                  .clip(MaterialTheme.shapes.medium)
+                  .clickable(onClick = onOpenMediaInfo),
+              shape = MaterialTheme.shapes.medium,
+              color = playerSheetSelectionColor(false),
+            ) {
+              Row(
+                modifier =
+                  Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+              ) {
+                Icon(
+                  imageVector = Icons.RoundedFilled.Info,
+                  contentDescription = stringResource(R.string.ui_media_info),
+                  tint = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                  text = stringResource(R.string.ui_media_info),
+                  style = MaterialTheme.typography.labelLarge,
+                  color = MaterialTheme.colorScheme.onSurface,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
+              }
+            }
+          }
+
+          if (onDeleteCurrentVideo != null) {
+            Surface(
+              modifier =
+                Modifier
+                  .weight(1f)
+                  .clip(MaterialTheme.shapes.medium)
+                  .clickable(onClick = onDeleteCurrentVideo),
+              shape = MaterialTheme.shapes.medium,
+              color = playerSheetSelectionColor(false),
+            ) {
+              Row(
+                modifier =
+                  Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+              ) {
+                Icon(
+                  imageVector = Icons.RoundedFilled.Delete,
+                  contentDescription = stringResource(R.string.delete),
+                  tint = MaterialTheme.colorScheme.error,
+                  modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                  text = stringResource(R.string.delete),
+                  style = MaterialTheme.typography.labelLarge,
+                  color = MaterialTheme.colorScheme.error,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
+              }
+            }
+          }
         }
       }
 
