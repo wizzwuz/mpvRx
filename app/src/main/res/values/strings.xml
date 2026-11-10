@@ -3001,4 +3001,6 @@
   <string name="pref_player_remember_video_zoom_summary">Restore zoom and pan positions automatically for new videos</string>
   <string name="delete_confirmation_message">Are you sure you want to permanently delete this video? This action cannot be undone.</string>
   <string name="media_info_no_file_provided">No local file available for Media Info</string>
+  <string name="pref_gesture_single_tap_left_title">Single tap (left)</string>
+  <string name="pref_gesture_single_tap_right_title">Single tap (right)</string>
 </resources>
