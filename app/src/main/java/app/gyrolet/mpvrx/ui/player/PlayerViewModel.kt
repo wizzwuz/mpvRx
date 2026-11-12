@@ -6447,6 +6447,9 @@ fun restartFromBeginning() {
     }
   }
 
+  fun handleCenterSingleTap() = handleCenterTap()
+  fun handleCenterDoubleTap() = handleCenterTap()
+
   fun handleRightTap() {
     when (gesturePreferences.rightSingleActionGesture.get()) {
       SingleActionGesture.Seek -> rightSeek()

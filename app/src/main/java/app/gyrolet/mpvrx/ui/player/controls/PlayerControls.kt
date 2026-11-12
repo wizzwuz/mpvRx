@@ -614,6 +614,22 @@ fun PlayerControls(
   }
 
   val playerActivity = LocalActivity.current as PlayerActivity
+  val panel by viewModel.panelShown.collectAsState()
+  val showDeleteConfirmation by viewModel.showDeleteConfirmation
+  if (showDeleteConfirmation) {
+    ConfirmDialog(
+      title = stringResource(R.string.delete),
+      subtitle = stringResource(R.string.delete_confirmation_message),
+      confirmText = stringResource(R.string.delete),
+      onConfirm = {
+        viewModel.showDeleteConfirmation.value = false
+        playerActivity.deleteCurrentlyPlayingVideo()
+      },
+      onCancel = {
+        viewModel.showDeleteConfirmation.value = false
+      },
+    )
+  }
   val configuration = LocalConfiguration.current
   var playerBounds by remember { mutableStateOf(IntSize.Zero) }
   val isPortrait =
@@ -2471,7 +2487,6 @@ fun PlayerControls(
       onDismissRequest = { onOpenSheet(Sheets.None) },
     )
 
-    val panel by viewModel.panelShown.collectAsState()
     LaunchedEffect(sheetShown, panel) {
       if (sheetShown != Sheets.None || panel != Panels.None) isPlayerDrawerShown = false
     }
