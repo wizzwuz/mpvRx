@@ -2093,6 +2093,10 @@ object SearchablePreferences {
         SearchEntrySpec(R.string.pref_gesture_single_tap_center_title, listOf("single", "tap", "center", "action"), R.string.pref_gesture_double_tap_center_title),
         SearchEntrySpec(R.string.pref_gesture_single_tap_right_title, listOf("single", "tap", "right", "action"), R.string.pref_gesture_double_tap_right_title),
         SearchEntrySpec(R.string.pref_custom_seek_label, listOf("custom", "seek", "seconds", "double tap"), R.string.pref_player_double_tap_seek_duration),
+        SearchEntrySpec(R.string.pref_gesture_use_single_tap_for_left_right_title, listOf("single", "tap", "left", "right", "play", "pause")),
+        SearchEntrySpec(R.string.pref_gesture_dont_show_seekbar_on_double_tap_title, listOf("double", "tap", "seekbar", "timeline", "seek", "hide")),
+        SearchEntrySpec(R.string.pref_gesture_reverse_double_tap_title, listOf("reverse", "invert", "double", "tap", "sides")),
+        SearchEntrySpec(R.string.pref_gesture_two_finger_tap_chapter_skip_title, listOf("two finger", "double finger", "chapter", "skip", "tap")),
       )
       addSearchEntries(
         category = "Advanced",

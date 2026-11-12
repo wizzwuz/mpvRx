@@ -5084,8 +5084,12 @@ class PlayerActivity :
         if (!hasState) {
           withContext(Dispatchers.Main) {
             if (!PlaybackSession.isCurrentGeneration(loadGeneration)) return@withContext
-            val zoomPreference = playerPreferences.defaultVideoZoom.get()
-            viewModel.setVideoZoom(zoomPreference)
+            if (playerPreferences.rememberVideoZoom.get()) {
+              val zoomPreference = playerPreferences.defaultVideoZoom.get()
+              viewModel.setVideoZoom(zoomPreference)
+            } else {
+              viewModel.setVideoZoom(0f)
+            }
           }
         }
         withContext(Dispatchers.Main) {
@@ -9157,6 +9161,156 @@ private suspend fun restorePlaybackPosition(state: PlaybackStateEntity?, loadGen
     // belong to the previous file after screen-off autoplay and disable video in the new file.
     PlaybackSession.markForeground()
     isInBackgroundPlayback = false
+  }
+
+  fun getCurrentVideoUri(): Uri? {
+    val currentItem = PlaybackSession.state.value.currentItem
+    val uriStr = currentItem?.originalUri?.takeIf { it.isNotBlank() }
+      ?: currentItem?.playableUri?.takeIf { it.isNotBlank() }
+      ?: currentPlayableUri?.takeIf { it.isNotBlank() }
+      ?: intent?.dataString?.takeIf { it.isNotBlank() }
+      ?: PlaybackSession.getPropertyString("stream-open-filename")?.takeIf { it.isNotBlank() }
+      ?: PlaybackSession.getPropertyString("path")?.takeIf { it.isNotBlank() }
+      ?: return null
+
+    return if (uriStr.startsWith("/")) {
+      Uri.fromFile(java.io.File(uriStr))
+    } else {
+      runCatching { Uri.parse(uriStr) }.getOrNull()
+    }
+  }
+
+  fun isCurrentVideoLocal(): Boolean {
+    val uri = getCurrentVideoUri() ?: return false
+    val scheme = uri.scheme
+    if (scheme == "http" || scheme == "https" || scheme == "rtmp" || scheme == "rtsp" || scheme == "ytdl") {
+      return false
+    }
+    val path = uri.path ?: uri.toString()
+    if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("rtmp://") || path.startsWith("rtsp://") || path.startsWith("ytdl://")) {
+      return false
+    }
+    return true
+  }
+
+  fun openMediaInfo() {
+    val uri = getCurrentVideoUri()
+    if (uri == null) {
+      android.widget.Toast.makeText(this, R.string.media_info_no_file_provided, android.widget.Toast.LENGTH_SHORT).show()
+      return
+    }
+
+    val intent = Intent(this, app.gyrolet.mpvrx.ui.mediainfo.MediaInfoActivity::class.java).apply {
+      action = Intent.ACTION_VIEW
+      val safeUri = if (uri.scheme == "file") {
+        val file = java.io.File(uri.path ?: "")
+        if (file.exists()) {
+          runCatching {
+            androidx.core.content.FileProvider.getUriForFile(this@PlayerActivity, "${packageName}.provider", file)
+          }.getOrNull() ?: uri
+        } else {
+          uri
+        }
+      } else {
+        uri
+      }
+      data = safeUri
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    startActivity(intent)
+  }
+
+  fun deleteCurrentlyPlayingVideo() {
+    val uri = getCurrentVideoUri()
+    if (uri == null || !isCurrentVideoLocal()) {
+      android.widget.Toast.makeText(this, "Cannot delete network streams", android.widget.Toast.LENGTH_SHORT).show()
+      return
+    }
+
+    lifecycleScope.launch(Dispatchers.IO) {
+      val resolvedPath = if (uri.scheme == "file") {
+        uri.path ?: ""
+      } else if (uri.scheme == "content") {
+        runCatching {
+          contentResolver.query(uri, arrayOf(android.provider.MediaStore.MediaColumns.DATA), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+              val idx = cursor.getColumnIndex(android.provider.MediaStore.MediaColumns.DATA)
+              if (idx != -1) cursor.getString(idx) else null
+            } else null
+          }
+        }.getOrNull() ?: uri.path ?: ""
+      } else {
+        uri.path ?: ""
+      }
+
+      runCatching { PlaybackSession.command("stop") }
+
+      var isDeleted = false
+      if (resolvedPath.isNotBlank()) {
+        try {
+          val file = java.io.File(resolvedPath)
+          if (file.exists() && file.delete()) {
+            isDeleted = true
+          }
+        } catch (e: Exception) {
+          Log.e(TAG, "Failed to delete file directly: $resolvedPath", e)
+        }
+      }
+
+      if (uri.scheme == "content") {
+        try {
+          val rows = contentResolver.delete(uri, null, null)
+          if (rows > 0) isDeleted = true
+        } catch (e: Exception) {
+          try {
+            if (android.provider.DocumentsContract.deleteDocument(contentResolver, uri)) {
+              isDeleted = true
+            }
+          } catch (e2: Exception) {
+            Log.e(TAG, "Failed to delete content URI: $uri", e2)
+          }
+        }
+      } else if (resolvedPath.isNotBlank()) {
+        try {
+          contentResolver.delete(
+            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            "${android.provider.MediaStore.Video.Media.DATA} = ?",
+            arrayOf(resolvedPath)
+          )
+        } catch (e: Exception) {
+          Log.e(TAG, "Failed to delete from MediaStore: $resolvedPath", e)
+        }
+      }
+
+      if (isDeleted || resolvedPath.isNotBlank()) {
+        if (resolvedPath.isNotBlank()) {
+          RecentlyPlayedOps.onVideoDeleted(resolvedPath)
+          app.gyrolet.mpvrx.utils.media.PlaybackStateOps.onVideoDeleted(resolvedPath)
+          runCatching {
+            android.media.MediaScannerConnection.scanFile(this@PlayerActivity, arrayOf(resolvedPath), null, null)
+          }
+        }
+      }
+
+      withContext(Dispatchers.Main) {
+        if (isDeleted) {
+          android.widget.Toast.makeText(
+            this@PlayerActivity,
+            getString(R.string.delete) + " " + getString(R.string.generic_ok).lowercase(),
+            android.widget.Toast.LENGTH_SHORT,
+          ).show()
+
+          val hasNext = viewModel.hasPlaylistSupport() && PlaybackSession.queue.value.items.size > 1
+          if (hasNext) {
+            runCatching { PlaybackSession.command("playlist-next") }
+          } else {
+            finish()
+          }
+        } else {
+          android.widget.Toast.makeText(this@PlayerActivity, "Failed to delete video", android.widget.Toast.LENGTH_SHORT).show()
+        }
+      }
+    }
   }
 
   companion object {

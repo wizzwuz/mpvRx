@@ -3203,4 +3203,25 @@
   <string name="theme_color_primary">Основной акцент</string>
   <string name="theme_color_secondary">Дополнительный акцент</string>
   <string name="theme_color_tertiary">Акцент выделения</string>
+  <string name="pref_gesture_dont_show_seekbar_on_double_tap_title">Не показывать шкалу перемотки при двойном нажатии</string>
+  <string name="pref_gesture_dont_show_seekbar_on_double_tap_summary">Скрывать шкалу времени во время перемотки двойным нажатием</string>
+  <string name="pref_gesture_two_finger_tap_chapter_skip_title">Пропуск глав касанием двумя пальцами</string>
+  <string name="pref_gesture_two_finger_tap_chapter_skip_summary">Касание двумя пальцами слева переходит к предыдущей главе, справа — к следующей</string>
+  <string name="pref_gesture_two_finger_double_tap_to_skip_title">Требовать двойное касание двумя пальцами</string>
+  <string name="pref_gesture_two_finger_double_tap_to_skip_summary">Требовать двойное касание двумя пальцами для предотвращения случайного пропуска глав</string>
+  <string name="pref_gesture_reverse_double_tap_title">Поменять стороны двойного нажатия / касания двумя пальцами</string>
+  <string name="pref_gesture_reverse_double_tap_summary">Инвертировать левую и правую стороны для перемотки и пропуска глав</string>
+  <string name="player_osd_no_chapters">Нет глав</string>
+  <string name="player_osd_first_chapter">Первая глава</string>
+  <string name="player_osd_last_chapter">Последняя глава</string>
+  <string name="player_osd_next_chapter">След: %1$s</string>
+  <string name="player_osd_prev_chapter">Пред: %1$s</string>
+  <string name="pref_gesture_use_single_tap_for_left_right_title">Использовать одиночное касание слева/справа</string>
+  <string name="pref_gesture_use_single_tap_for_left_right_summary">Использовать одиночное касание в левой и правой областях для жестов (например, пауза/воспроизведение) наряду с двойным касанием.</string>
+  <string name="pref_player_remember_video_zoom_title">Запоминать позицию зума</string>
+  <string name="pref_player_remember_video_zoom_summary">Автоматически восстанавливать зум и панорамирование для новых видео</string>
+  <string name="delete_confirmation_message">Вы действительно хотите удалить это видео? Это действие невозможно отменить.</string>
+  <string name="media_info_no_file_provided">Локальный файл для информации о медиа недоступен</string>
+  <string name="pref_gesture_single_tap_left_title">Одиночное касание (слева)</string>
+  <string name="pref_gesture_single_tap_right_title">Одиночное касание (справа)</string>
 </resources>

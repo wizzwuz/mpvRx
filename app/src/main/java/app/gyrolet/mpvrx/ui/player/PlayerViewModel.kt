@@ -33,6 +33,7 @@ import android.webkit.MimeTypeMap
 import app.gyrolet.mpvrx.ui.components.AppToast as Toast
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
+import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.gyrolet.mpvrx.R
@@ -2258,6 +2259,11 @@ fun restartFromBeginning() {
   val isPlaylistSwipeActive = MutableStateFlow(false)
   val playlistSwipeOffset = MutableStateFlow(0f)
   val panelShown = MutableStateFlow(Panels.None)
+  val showDeleteConfirmation = mutableStateOf(false)
+
+  fun requestDeleteCurrentVideo() {
+    showDeleteConfirmation.value = true
+  }
   private val _videoOpenAnimationState = MutableStateFlow(VideoOpenAnimationState())
   val videoOpenAnimationState: StateFlow<VideoOpenAnimationState> = _videoOpenAnimationState.asStateFlow()
 
@@ -6428,6 +6434,8 @@ fun restartFromBeginning() {
     }
   }
 
+  fun handleLeftDoubleTap() = handleLeftTap()
+
   fun handleCenterTap() {
     when (gesturePreferences.centerSingleActionGesture.get()) {
       SingleActionGesture.PlayPause -> pauseUnpause()
@@ -6448,6 +6456,98 @@ fun restartFromBeginning() {
           PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapRight.keyCode)
         }
       SingleActionGesture.None -> {}
+    }
+  }
+
+  fun handleRightDoubleTap() = handleRightTap()
+
+  fun handleLeftSingleTap() {
+    when (gesturePreferences.leftSingleTapGesture.get()) {
+      SingleActionGesture.PlayPause -> pauseUnpause()
+      SingleActionGesture.Seek -> leftSeek()
+      SingleActionGesture.Custom ->
+        viewModelScope.launch(Dispatchers.IO) {
+          PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapLeft.keyCode)
+        }
+      SingleActionGesture.None -> {}
+    }
+  }
+
+  fun handleRightSingleTap() {
+    when (gesturePreferences.rightSingleTapGesture.get()) {
+      SingleActionGesture.PlayPause -> pauseUnpause()
+      SingleActionGesture.Seek -> rightSeek()
+      SingleActionGesture.Custom ->
+        viewModelScope.launch(Dispatchers.IO) {
+          PlaybackSession.command("keypress", CustomKeyCodes.DoubleTapRight.keyCode)
+        }
+      SingleActionGesture.None -> {}
+    }
+  }
+
+  fun skipChapter(forward: Boolean) {
+    val chapters = playbackChapters.value
+    if (chapters.isEmpty()) {
+      val chapterCount = PlaybackSession.getPropertyInt("chapter-list/count") ?: 0
+      if (chapterCount > 0) {
+        PlaybackSession.command("add", "chapter", if (forward) "1" else "-1")
+        return
+      }
+      val noChaptersText = appContext.getString(R.string.player_osd_no_chapters)
+      playerUpdate.value = PlayerUpdates.ShowText(noChaptersText)
+      viewModelScope.launch {
+        delay(1500)
+        if (playerUpdate.value is PlayerUpdates.ShowText && (playerUpdate.value as PlayerUpdates.ShowText).value == noChaptersText) {
+          playerUpdate.value = PlayerUpdates.None
+        }
+      }
+      return
+    }
+
+    val snapshot = PlaybackSession.bookmarkSnapshot()
+    val item = snapshot?.first ?: PlaybackSession.state.value.currentItem
+    val positionMs = snapshot?.second ?: ((pos ?: 0).toLong() * 1000L)
+    val position = item?.audiobook?.let { info ->
+      AudiobookPlayback.book.value?.takeIf { it.book.id == info.bookId }?.positionInBook(info.trackId, positionMs)
+    } ?: positionMs
+
+    val currentIndex = chapters.indexOfLast { it.start * 1000 <= position }
+    val current = chapters.getOrNull(currentIndex)
+    val msg: String
+
+    if (forward) {
+      val targetIndex = if (currentIndex < 0) 0 else currentIndex + 1
+      if (targetIndex < chapters.size) {
+        val target = chapters[targetIndex]
+        seekToPlaybackChapter(target)
+        val name = target.name.ifBlank { "Chapter ${targetIndex + 1}" }
+        msg = appContext.getString(R.string.player_osd_next_chapter, name)
+      } else {
+        msg = appContext.getString(R.string.player_osd_last_chapter)
+      }
+    } else {
+      if (current != null && position - current.start * 1000 > 3000) {
+        seekToPlaybackChapter(current)
+        val name = current.name.ifBlank { "Chapter ${currentIndex + 1}" }
+        msg = name
+      } else if (currentIndex > 0) {
+        val targetIndex = currentIndex - 1
+        val target = chapters[targetIndex]
+        seekToPlaybackChapter(target)
+        val name = target.name.ifBlank { "Chapter ${targetIndex + 1}" }
+        msg = appContext.getString(R.string.player_osd_prev_chapter, name)
+      } else {
+        seekAudioTo(0f)
+        msg = appContext.getString(R.string.player_osd_first_chapter)
+      }
+    }
+
+    playerUpdate.value = PlayerUpdates.ShowText(msg)
+    viewModelScope.launch {
+      delay(1500)
+      if (playerUpdate.value is PlayerUpdates.ShowText && (playerUpdate.value as PlayerUpdates.ShowText).value == msg) {
+        playerUpdate.value = PlayerUpdates.None
+      }
     }
   }
 

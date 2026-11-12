@@ -3227,4 +3227,25 @@
   <string name="player_skip_credits">Skip credits</string>
   <string name="player_skip_preview">Skip preview</string>
   <string name="player_skip_automatic">%1$s (automatic)</string>
+  <string name="pref_gesture_dont_show_seekbar_on_double_tap_title">Don\'t show seekbar on double tap</string>
+  <string name="pref_gesture_dont_show_seekbar_on_double_tap_summary">Hide the timeline seekbar while double tapping to seek</string>
+  <string name="pref_gesture_two_finger_tap_chapter_skip_title">Two-finger tap to skip chapters</string>
+  <string name="pref_gesture_two_finger_tap_chapter_skip_summary">Tap with two fingers on the left to go to the previous chapter, right to go to the next chapter</string>
+  <string name="pref_gesture_two_finger_double_tap_to_skip_title">Require two-finger double tap</string>
+  <string name="pref_gesture_two_finger_double_tap_to_skip_summary">Require a double tap with two fingers to avoid accidental chapter skips</string>
+  <string name="pref_gesture_reverse_double_tap_title">Reverse double tap / two-finger sides</string>
+  <string name="pref_gesture_reverse_double_tap_summary">Invert left and right sides for seek and chapter skip gestures</string>
+  <string name="player_osd_no_chapters">No chapters</string>
+  <string name="player_osd_first_chapter">First chapter</string>
+  <string name="player_osd_last_chapter">Last chapter</string>
+  <string name="player_osd_next_chapter">Next: %1$s</string>
+  <string name="player_osd_prev_chapter">Previous: %1$s</string>
+  <string name="pref_gesture_use_single_tap_for_left_right_title">Use single tap for left/right gesture</string>
+  <string name="pref_gesture_use_single_tap_for_left_right_summary">Use a single tap in the left and right areas for gestures (e.g. play/pause) alongside double tap.</string>
+  <string name="pref_player_remember_video_zoom_title">Remember zoom position</string>
+  <string name="pref_player_remember_video_zoom_summary">Restore zoom and pan positions automatically for new videos</string>
+  <string name="delete_confirmation_message">Are you sure you want to permanently delete this video? This action cannot be undone.</string>
+  <string name="media_info_no_file_provided">No local file available for Media Info</string>
+  <string name="pref_gesture_single_tap_left_title">Single tap (left)</string>
+  <string name="pref_gesture_single_tap_right_title">Single tap (right)</string>
 </resources>

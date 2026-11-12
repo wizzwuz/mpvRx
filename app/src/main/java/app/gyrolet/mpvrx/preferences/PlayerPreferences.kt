@@ -114,6 +114,7 @@ class PlayerPreferences(
   /** Subtitles and the statistics OSD (pages 1-6) scale together with video zoom. */
   val overlaysFollowVideoZoom = preferenceStore.getBoolean("overlays_follow_video_zoom", false)
   val defaultVideoZoom = preferenceStore.getFloat("default_video_zoom", 0f)
+  val rememberVideoZoom = preferenceStore.getBoolean("remember_video_zoom", true)
   val panAndZoomEnabled = preferenceStore.getBoolean("pan_and_zoom_enabled", false)
 
   val includeSubtitlesInSnapshot = preferenceStore.getBoolean("include_subtitles_in_snapshot", false)
