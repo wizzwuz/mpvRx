@@ -86,6 +86,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -94,6 +95,7 @@ import androidx.compose.ui.unit.dp
 import app.gyrolet.mpvrx.R
 import app.gyrolet.mpvrx.ui.icons.AppIcon
 import app.gyrolet.mpvrx.ui.icons.Icon
+import app.gyrolet.mpvrx.ui.icons.Icons
 import app.gyrolet.mpvrx.ui.player.controls.components.rememberTvInitialFocusRequester
 import app.gyrolet.mpvrx.ui.player.controls.components.tvFocusGroup
 import app.gyrolet.mpvrx.ui.player.controls.components.tvFocusHighlight
@@ -303,7 +305,7 @@ fun PlayerSheet(
               gesturesEnabled = canDrag || resize != null,
             )
             if (title != null) {
-              PlayerSheetHeader(title = title, actions = actions)
+              PlayerSheetHeader(title = title, onDismissRequest = internalOnDismissRequest, actions = actions)
             }
             Box(Modifier.fillMaxWidth().weight(1f, fill = false)) {
               content()
@@ -398,34 +400,49 @@ fun PlayerSheetDragHandle(
   }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PlayerSheetHeader(
-  title: String,
+  title: String?,
   modifier: Modifier = Modifier,
+  onDismissRequest: (() -> Unit)? = null,
   actions: @Composable RowScope.() -> Unit = {},
 ) {
   Row(
-    modifier = modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 4.dp, bottom = 2.dp),
-    horizontalArrangement = Arrangement.spacedBy(6.dp),
+    modifier =
+      modifier
+        .fillMaxWidth()
+        .padding(start = 16.dp, end = 8.dp, top = 2.dp, bottom = 4.dp),
     verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.SpaceBetween,
   ) {
-    if (title.isNotBlank()) {
+    if (!title.isNullOrBlank()) {
       Text(
         text = title,
-        modifier = Modifier.weight(1f).semantics { heading() },
-        style = MaterialTheme.typography.titleLargeEmphasized,
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.SemiBold,
         color = MaterialTheme.colorScheme.onSurface,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f, fill = false),
       )
     } else {
       Spacer(Modifier.weight(1f))
     }
     Row(
       verticalAlignment = Alignment.CenterVertically,
-      content = actions,
-    )
+    ) {
+      actions()
+      if (onDismissRequest != null) {
+        IconButton(
+          onClick = onDismissRequest,
+          modifier = Modifier.size(40.dp),
+        ) {
+          Icon(
+            Icons.RoundedFilled.Close,
+            contentDescription = null,
+            modifier = Modifier.size(24.dp),
+          )
+        }
+      }
+    }
   }
 }
 
