@@ -11,6 +11,8 @@
 
 package app.gyrolet.mpvrx.presentation.components
 
+import android.annotation.SuppressLint
+import android.content.res.Configuration.ORIENTATION_PORTRAIT
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.AnimationVector
@@ -18,7 +20,6 @@ import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.TwoWayConverter
 import androidx.compose.animation.core.VectorizedFiniteAnimationSpec
 import androidx.compose.animation.rememberSplineBasedDecay
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.AnchoredDraggableState
@@ -27,30 +28,31 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.anchoredDraggable
 import androidx.compose.foundation.gestures.animateTo
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.ZeroCornerSize
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
@@ -78,63 +80,55 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.dismiss
 import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.isTraversalGroup
-import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
-import app.gyrolet.mpvrx.R
 import app.gyrolet.mpvrx.ui.icons.AppIcon
 import app.gyrolet.mpvrx.ui.icons.Icon
 import app.gyrolet.mpvrx.ui.icons.Icons
 import app.gyrolet.mpvrx.ui.player.controls.components.rememberTvInitialFocusRequester
 import app.gyrolet.mpvrx.ui.player.controls.components.tvFocusGroup
-import app.gyrolet.mpvrx.ui.player.controls.components.tvFocusHighlight
 import app.gyrolet.mpvrx.ui.player.controls.components.tvInitialFocus
 import androidx.compose.ui.focus.focusProperties
+import app.gyrolet.mpvrx.preferences.AppearancePreferences
+import app.gyrolet.mpvrx.preferences.preference.collectAsState
 import app.gyrolet.mpvrx.ui.liquidglass.LocalKyantPlayerBackdrop
-import app.gyrolet.mpvrx.ui.liquidglass.liquidGlassActive
 import app.gyrolet.mpvrx.ui.liquidglass.playerGlassSurface
 import app.gyrolet.mpvrx.ui.liquidglass.LocalPlayerGlassSurfaceActive
+import org.koin.compose.koinInject
 import app.gyrolet.mpvrx.ui.theme.AppMotion
 import app.gyrolet.mpvrx.ui.theme.LocalMotionPolicy
 import app.gyrolet.mpvrx.ui.theme.MotionPolicy
-import app.gyrolet.mpvrx.ui.tv.TvSafeArea
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
+@SuppressLint("ConfigurationScreenWidthHeight")
 @Composable
 fun PlayerSheet(
   onDismissRequest: () -> Unit,
   modifier: Modifier = Modifier,
   tonalElevation: Dp = 0.dp,
   customMaxWidth: Dp? = null,
+  customMaxHeight: Dp? = null,
   surfaceColor: Color? = null,
   isSwipeActive: Boolean = false,
   swipeOffset: Float = 0f,
   title: String? = null,
   actions: @Composable RowScope.() -> Unit = {},
   useFrostedGlass: Boolean = true,
-  scrimAlpha: Float = 0.5f,
-  dragToDismiss: Boolean = true,
-  confirmDismiss: () -> Boolean = { true },
   content: @Composable () -> Unit,
 ) {
   val scope = rememberCoroutineScope()
-  val window = sheetWindow()
-  val television = window.television
-  val liquidGlassEnabled = liquidGlassActive()
+  val preferences = koinInject<AppearancePreferences>()
+  val liquidGlassEnabled by preferences.liquidGlassEnabled.collectAsState()
   val playerBackdrop = LocalKyantPlayerBackdrop.current
   val isFrosted = useFrostedGlass && liquidGlassEnabled
   // TV/remote: request focus INTO the sheet content when it opens, so the D-pad can navigate/select
@@ -157,16 +151,22 @@ fun PlayerSheet(
   }
   val density = LocalDensity.current
   val latestOnDismissRequest by rememberUpdatedState(onDismissRequest)
-  val latestConfirmDismiss by rememberUpdatedState(confirmDismiss)
-  var dismissalDelivered by remember { mutableStateOf(false) }
-  val deliverDismissal: () -> Unit = {
-    if (!dismissalDelivered) {
-      dismissalDelivered = true
-      latestOnDismissRequest()
-    }
-  }
+  val isLandscape = LocalConfiguration.current.orientation != ORIENTATION_PORTRAIT
+  val maxWidth = customMaxWidth ?: if (isLandscape) 420.dp else 380.dp
   val isImeVisible = WindowInsets.ime.getBottom(density) > 0
-  val sheetTravelPx = with(density) { window.height.toPx() }
+  val maxHeight =
+    customMaxHeight ?: when {
+      isImeVisible -> LocalConfiguration.current.screenHeightDp.dp
+      LocalConfiguration.current.orientation == ORIENTATION_PORTRAIT ->
+        LocalConfiguration.current.screenHeightDp.dp * .85f
+      else -> LocalConfiguration.current.screenHeightDp.dp
+    }
+
+  val screenWidthPx =
+    with(density) {
+      LocalConfiguration.current.screenWidthDp.dp
+        .toPx()
+    }
   val decayAnimationSpec = rememberSplineBasedDecay<Float>()
   val anchoredDraggableState =
     remember {
@@ -182,140 +182,112 @@ fun PlayerSheet(
   val scaledSwipeOffset = swipeOffset * 2f
   val currentIsSwipeActive by rememberUpdatedState(isSwipeActive)
   val currentScaledSwipeOffset by rememberUpdatedState(scaledSwipeOffset)
-  val height =
-    if (anchoredDraggableState.anchors.size >
-      0
-    ) {
+  val width =
+    if (anchoredDraggableState.anchors.size > 0) {
       anchoredDraggableState.anchors.positionOf(1)
     } else {
-      sheetTravelPx
+      screenWidthPx
     }
-  val swipeProgress = if (height > 0) (-scaledSwipeOffset / height).coerceIn(0f, 1f) else 0f
-  val targetAlpha =
-    if (isSwipeActive) {
-      if (anchoredDraggableState.anchors.size > 0) scrimAlpha * swipeProgress else 0f
-    } else if (anchoredDraggableState.targetValue == 0) {
-      scrimAlpha
-    } else {
-      0f
-    }
-  val alpha by animateFloatAsState(
-    targetAlpha,
-    animationSpec = if (reducedMotion) AppMotion.ReducedAlpha else AppMotion.Effect.Alpha,
-    label = "alpha",
-  )
 
-  // Ask before moving the sheet so an unsaved-changes prompt does not hide the form.
   val internalOnDismissRequest: () -> Unit = {
-    if (!dismissalDelivered && latestConfirmDismiss()) {
-      scope.launch {
+    scope.launch {
+      try {
         anchoredDraggableState.animateTo(1)
-        deliverDismissal()
+      } finally {
+        latestOnDismissRequest()
       }
     }
   }
-  val closeLabel = stringResource(R.string.ui_close)
-  Box(Modifier.fillMaxSize().semantics { isTraversalGroup = true }) {
-    Box(
-      Modifier.matchParentSize().background(Color.Black.copy(alpha))
+  Box(
+    modifier =
+      Modifier
+        .fillMaxSize()
+        // Focus stays inside the sheet and doesn't get trapped by an outer scrim.
         .focusProperties { canFocus = false }
-        .clickable(
-          interactionSource = remember { MutableInteractionSource() },
-          indication = null,
-          onClickLabel = closeLabel,
-          onClick = internalOnDismissRequest,
-        ),
-    )
-    Box(
-      modifier = Modifier.fillMaxSize()
-        // Lifts the whole sheet above the keyboard instead of padding inside a height-capped surface.
         .imePadding()
-        .windowInsetsPadding(
-          CenteredSheetInsets(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)),
-        )
-        .then(if (television) Modifier.padding(TvSafeArea.Padding) else Modifier)
         .onSizeChanged {
           val anchors =
             DraggableAnchors {
               0 at 0f
-              1 at minOf(it.height.toFloat(), sheetTravelPx)
+              1 at it.width.toFloat()
             }
           anchoredDraggableState.updateAnchors(anchors)
         },
-      contentAlignment = Alignment.BottomCenter,
-    ) {
-      val sheetShape =
-        if (television) MaterialTheme.shapes.extraLargeIncreased
-        else MaterialTheme.shapes.extraLargeIncreased.copy(bottomEnd = ZeroCornerSize, bottomStart = ZeroCornerSize)
-      val baseContainerColor = surfaceColor ?: MaterialTheme.colorScheme.surfaceContainerHigh
-      val canDrag = !television && dragToDismiss
-      Surface(
-        modifier = Modifier
-          .sizeIn(maxWidth = window.maxWidth(customMaxWidth))
-          .fillMaxWidth()
+    contentAlignment = Alignment.CenterEnd,
+  ) {
+    val sheetShape = MaterialTheme.shapes.extraLarge
+    val baseContainerColor = surfaceColor ?: MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.94f)
+    val glassModifier = Modifier.playerGlassSurface(
+      backdrop = playerBackdrop.takeIf { isFrosted },
+      shape = sheetShape,
+      containerColor = baseContainerColor,
+      enabled = isFrosted,
+    )
+
+    Surface(
+      modifier =
+        Modifier
+          .sizeIn(maxWidth = maxWidth, maxHeight = maxHeight)
+          .fillMaxHeight(if (isLandscape) 0.95f else 0.85f)
+          .padding(end = 12.dp, top = 8.dp, bottom = 8.dp)
+          .focusProperties { canFocus = false }
+          .clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = {},
+          ).then(glassModifier)
           .then(modifier)
           .tvFocusGroup()
           .tvInitialFocus(sheetInitialFocus)
           .offset {
-            val baseOffset = anchoredDraggableState.offset.takeIf { it.isFinite() } ?: sheetTravelPx
-            IntOffset(0, baseOffset.roundToInt())
-          }
-          .graphicsLayer { this.alpha = if (anchoredDraggableState.anchors.size > 0) 1f else 0f }
-          // Stop taps inside the sheet from hitting the scrim without making the sheet a fake button.
-          .pointerInput(Unit) {}
-          .semantics {
-            if (!title.isNullOrBlank()) paneTitle = title
-            dismiss(closeLabel) {
-              internalOnDismissRequest()
-              true
-            }
-          }
-          .then(
-            if (canDrag) {
-              Modifier.nestedScroll(
-                remember(anchoredDraggableState) { anchoredDraggableState.preUpPostDownNestedScrollConnection() },
-              )
-            } else Modifier,
-          )
-          .anchoredDraggable(
+            val baseOffset =
+              anchoredDraggableState.offset
+                .takeIf { it.isFinite() }
+                ?: screenWidthPx
+            IntOffset(baseOffset.roundToInt().coerceAtLeast(0), 0)
+          }.graphicsLayer {
+            this.alpha = if (anchoredDraggableState.anchors.size > 0) 1f else 0f
+          }.anchoredDraggable(
             state = anchoredDraggableState,
-            orientation = Orientation.Vertical,
-            enabled = canDrag,
-          )
-          .playerGlassSurface(playerBackdrop, sheetShape, baseContainerColor, enabled = isFrosted),
-        shape = sheetShape,
-        color = if (isFrosted) Color.Transparent else baseContainerColor.copy(alpha = 1f),
-        tonalElevation = if (isFrosted) 0.dp else tonalElevation,
-        border = if (isFrosted) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f)),
-      ) {
-        BackHandler(enabled = anchoredDraggableState.targetValue == 0, onBack = internalOnDismissRequest)
-        CompositionLocalProvider(
-          LocalPlayerGlassSurfaceActive provides isFrosted,
-          LocalMotionPolicy provides MotionPolicy(reduceMotion = reducedMotion),
-          androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.onSurface,
-        ) {
-          ResponsiveSheetContent(
-            window = window,
-            modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-              .padding(bottom = if (isImeVisible) 0.dp else 4.dp),
-          ) { resize ->
-            SheetOpeningHandle(
-              resize = resize,
-              showDragHandle = canDrag || (!television && title != null),
-              gesturesEnabled = canDrag || resize != null,
+            orientation = Orientation.Horizontal,
+          ).windowInsetsPadding(
+            WindowInsets.systemBars
+              .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Vertical),
+          ),
+      shape = sheetShape,
+      color = if (isFrosted) Color.Transparent else baseContainerColor,
+      tonalElevation = if (tonalElevation > 0.dp) tonalElevation else 2.dp,
+      content = {
+        BackHandler(
+          enabled = anchoredDraggableState.targetValue == 0,
+          onBack = internalOnDismissRequest,
+        )
+        CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = reducedMotion)) {
+          Column(
+            // The keyboard already covers the navigation bar; its padding would push content under the IME.
+            modifier =
+              if (isImeVisible) {
+                Modifier.fillMaxWidth()
+              } else {
+                Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 12.dp)
+              },
+            horizontalAlignment = Alignment.CenterHorizontally,
+          ) {
+            PlayerSheetDragHandle()
+            PlayerSheetHeader(
+              title = title,
+              onDismissRequest = internalOnDismissRequest,
+              actions = actions,
             )
-            if (title != null) {
-              PlayerSheetHeader(title = title, onDismissRequest = internalOnDismissRequest, actions = actions)
-            }
             Box(Modifier.fillMaxWidth().weight(1f, fill = false)) {
               content()
             }
           }
         }
-      }
-    }
+      },
+    )
 
-    LaunchedEffect(anchoredDraggableState, sheetTravelPx) {
+    LaunchedEffect(anchoredDraggableState, screenWidthPx) {
       snapshotFlow {
         Triple(
           currentIsSwipeActive,
@@ -327,7 +299,7 @@ fun PlayerSheet(
           val closedOffset = anchoredDraggableState.anchors.positionOf(1)
           val currentOffset = anchoredDraggableState.offset
           if (closedOffset.isFinite() && currentOffset.isFinite()) {
-            val targetOffset = (closedOffset + latestSwipeOffset).coerceIn(0f, closedOffset)
+            val targetOffset = (closedOffset + latestSwipeOffset).coerceIn(0f, screenWidthPx)
             anchoredDraggableState.dispatchRawDelta(targetOffset - currentOffset)
           }
         }
@@ -341,17 +313,15 @@ fun PlayerSheet(
       } else {
         if (wasSwipeActive) {
           val currentOffset = anchoredDraggableState.offset
-          // Settle to open (0) if the user dragged up by more than 10% of the sheet height
-          val target = if (currentOffset >= height * 0.9f) 1 else 0
-          if (target == 1 && !latestConfirmDismiss()) {
-            anchoredDraggableState.animateTo(0)
-          } else {
-            anchoredDraggableState.animateTo(target)
-            if (target == 1) deliverDismissal()
+          // Settle to closed (1) if dragged right by more than 40% of the panel width
+          val target = if (currentOffset >= width * 0.4f) 1 else 0
+          anchoredDraggableState.animateTo(target)
+          if (target == 1) {
+            latestOnDismissRequest()
           }
           wasSwipeActive = false
         } else {
-          // Title tap opening: wait for anchors to be measured before animating open (0)
+          // Open animation
           snapshotFlow { anchoredDraggableState.anchors.size }
             .filter { it > 0 }
             .collectLatest {
@@ -367,12 +337,8 @@ fun PlayerSheet(
         .collectLatest { value ->
           if (value == 0) {
             wasOpened = true
-          } else if (value == 1 && wasOpened && !dismissalDelivered) {
-            if (latestConfirmDismiss()) {
-              deliverDismissal()
-            } else {
-              anchoredDraggableState.animateTo(0)
-            }
+          } else if (value == 1 && wasOpened) {
+            latestOnDismissRequest()
           }
         }
     }
@@ -380,22 +346,11 @@ fun PlayerSheet(
 }
 
 @Composable
-fun PlayerSheetDragHandle(
-  onVerticalDrag: ((Boolean) -> Unit)? = null,
-  visible: Boolean = true,
-) {
-  Box(
-    Modifier.fillMaxWidth()
-      .then(if (visible && onVerticalDrag != null) Modifier.sheetExpandDrag(onVerticalDrag) else Modifier)
-      .padding(top = 12.dp, bottom = 12.dp),
-    contentAlignment = Alignment.Center,
-  ) {
+fun PlayerSheetDragHandle() {
+  Box(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp), contentAlignment = Alignment.Center) {
     Box(
       Modifier.size(width = 34.dp, height = 4.dp)
-        .background(
-          if (visible) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f) else Color.Transparent,
-          RoundedCornerShape(2.dp),
-        ),
+        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f), RoundedCornerShape(2.dp)),
     )
   }
 }
@@ -446,36 +401,21 @@ fun PlayerSheetHeader(
   }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PlayerSheetSectionHeader(
   title: String,
   modifier: Modifier = Modifier,
 ) {
-  Row(
-    modifier =
-      modifier
-        .fillMaxWidth()
-        .padding(horizontal = 20.dp, vertical = 12.dp)
-        .semantics { heading() },
-    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    Surface(
-      modifier = Modifier.size(width = 4.dp, height = 24.dp),
-      shape = MaterialTheme.shapes.extraSmall,
-      color = MaterialTheme.colorScheme.primary,
-      content = {},
-    )
-    Text(
-      text = title,
-      style = MaterialTheme.typography.labelLargeEmphasized,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-  }
+  Text(
+    text = title,
+    modifier = modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp).semantics { heading() },
+    style = MaterialTheme.typography.labelLarge,
+    fontWeight = FontWeight.SemiBold,
+    color = MaterialTheme.colorScheme.onSurfaceVariant,
+  )
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerSheetAction(
   icon: AppIcon,
@@ -488,13 +428,8 @@ fun PlayerSheetAction(
     tooltip = { PlainTooltip { Text(label) } },
     state = rememberTooltipState(),
   ) {
-    IconButton(
-      onClick = onClick,
-      enabled = enabled,
-      shapes = IconButtonDefaults.shapes(),
-      modifier = Modifier.size(48.dp).tvFocusHighlight(MaterialTheme.shapes.medium),
-    ) {
-      Icon(icon, contentDescription = label, modifier = Modifier.size(22.dp))
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(48.dp)) {
+      Icon(icon, contentDescription = label, modifier = Modifier.size(24.dp))
     }
   }
 }

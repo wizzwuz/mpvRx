@@ -290,11 +290,6 @@ fun GestureHandler(
     region: String,
     inExclusionZone: Boolean,
   ) {
-    if (anyPanelShown && !allowGesturesInPanels) {
-      if (panelShown != Panels.None) viewModel.panelShown.update { Panels.None }
-      if (externalPanelShown) onDismissExternalPanel()
-      return
-    }
     if (areControlsLocked) {
       viewModel.showControls()
       return
@@ -505,10 +500,8 @@ fun GestureHandler(
           useSingleTapForCenter,
           controlsShown,
           gesturePreferences,
-          isVerticalGestureActive,
         ) {
           // Isolated double-tap detection that doesn't interfere with other gestures
-          if (isVerticalGestureActive) return@pointerInput
           awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             beginGesture(down.id.value, down.uptimeMillis)
@@ -583,7 +576,7 @@ fun GestureHandler(
                     (pointer.position.y - downPosition.y) * (pointer.position.y - downPosition.y),
                 )
 
-              if (distance > 10f) {
+              if (distance > viewConfiguration.touchSlop) {
                 isDrag = true
                 singleTapJob?.cancel()
                 singleTapJob = null
@@ -603,6 +596,21 @@ fun GestureHandler(
                     val nextEvent = awaitPointerEvent()
                     if (!nextEvent.changes.any { it.pressed }) break
                   }
+                  break
+                }
+
+                // If controls are currently shown, tapping outside controls immediately hides them
+                if (controlsShown && !isDrag && !wasConsumedByTapGesture && !wasOwnedByAnotherGesture) {
+                  viewModel.hideControls()
+                  singleTapJob?.cancel()
+                  singleTapJob = null
+                  tapCount = 0
+                  lastTapRegion = null
+                  pendingSingleTapRegion = null
+                  pendingSingleTapPosition = null
+                  pendingTapInExclusionZone = false
+                  wasConsumedByTapGesture = true
+                  pointer.consume()
                   break
                 }
 
@@ -764,24 +772,21 @@ fun GestureHandler(
                     val isLeftImmediate = region == "left" && useSingleTapForLeftRight && !hasLeftDoubleTap
                     val isRightImmediate = region == "right" && useSingleTapForLeftRight && !hasRightDoubleTap
 
-                    if ((isCenterImmediate || isLeftImmediate || isRightImmediate) &&
-                      !longPressTriggeredDuringTouch &&
-                      !controlsShown
-                    ) {
+                    if (isCenterImmediate || isLeftImmediate || isRightImmediate) {
                       executeSingleTapAction(region, inExclusionZone)
                       tapCount = 0
                       lastTapRegion = null
                       pendingSingleTapRegion = null
                       pendingSingleTapPosition = null
                       pendingTapInExclusionZone = false
-                    } else if (!isDoubleTapSeeking && seekAmount == 0) {
+                    } else {
                       // Delayed single tap to allow potential double-tap
                       singleTapJob?.cancel()
                       val targetRegion = region
                       val targetExclusion = inExclusionZone
                       singleTapJob = coroutineScope.launch {
                         delay(doubleTapTimeout)
-                        if (tapCount == 1 && !isDoubleTapSeeking && seekAmount == 0 && !longPressTriggeredDuringTouch) {
+                        if (tapCount == 1) {
                           executeSingleTapAction(targetRegion, targetExclusion)
                         }
                         tapCount = 0
