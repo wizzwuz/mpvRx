@@ -124,6 +124,9 @@ fun PlayerSheet(
   title: String? = null,
   actions: @Composable RowScope.() -> Unit = {},
   useFrostedGlass: Boolean = true,
+  scrimAlpha: Float = 0f,
+  dragToDismiss: Boolean = true,
+  confirmDismiss: () -> Boolean = { true },
   content: @Composable () -> Unit,
 ) {
   val scope = rememberCoroutineScope()
@@ -189,12 +192,15 @@ fun PlayerSheet(
       screenWidthPx
     }
 
+  val latestConfirmDismiss by rememberUpdatedState(confirmDismiss)
   val internalOnDismissRequest: () -> Unit = {
-    scope.launch {
-      try {
-        anchoredDraggableState.animateTo(1)
-      } finally {
-        latestOnDismissRequest()
+    if (latestConfirmDismiss()) {
+      scope.launch {
+        try {
+          anchoredDraggableState.animateTo(1)
+        } finally {
+          latestOnDismissRequest()
+        }
       }
     }
   }
@@ -346,11 +352,17 @@ fun PlayerSheet(
 }
 
 @Composable
-fun PlayerSheetDragHandle() {
+fun PlayerSheetDragHandle(
+  onVerticalDrag: ((Boolean) -> Unit)? = null,
+  visible: Boolean = true,
+) {
   Box(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp), contentAlignment = Alignment.Center) {
     Box(
       Modifier.size(width = 34.dp, height = 4.dp)
-        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f), RoundedCornerShape(2.dp)),
+        .background(
+          if (visible) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f) else Color.Transparent,
+          RoundedCornerShape(2.dp),
+        ),
     )
   }
 }
