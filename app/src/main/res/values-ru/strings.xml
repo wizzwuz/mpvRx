@@ -3195,4 +3195,22 @@
   <string name="pref_player_remember_video_zoom_summary">Автоматически восстанавливать зум и панорамирование для новых видео</string>
   <string name="delete_confirmation_message">Вы действительно хотите удалить это видео? Это действие невозможно отменить.</string>
   <string name="media_info_no_file_provided">Локальный файл для информации о медиа недоступен</string>
+  <!-- Aspect ratio manual zoom and pan -->
+  <string name="player_sheets_aspect_ratio_manual_zoom_pan_title">Ручной масштаб и панорамирование (смещение камеры)</string>
+  <string name="player_sheets_aspect_ratio_zoom_value">Масштаб: %1$.2fx</string>
+  <string name="player_sheets_aspect_ratio_reset_zoom">Сбросить масштаб</string>
+  <string name="player_sheets_aspect_ratio_horizontal_offset_value">Смещение по горизонтали: %1$.3f</string>
+  <string name="player_sheets_aspect_ratio_vertical_offset_value">Смещение по вертикали: %1$.3f</string>
+  <string name="player_sheets_aspect_ratio_reset_pan">Сбросить панорамирование</string>
+  <string name="player_sheets_aspect_ratio_advanced_zoom_toggle">Расширенное масштабирование</string>
+  <string name="player_sheets_aspect_ratio_advanced_zoom_description">Независимое растяжение или обрезка по горизонтальной и вертикальной осям, полезно для удаления чёрных полос</string>
+  <string name="player_sheets_aspect_ratio_horizontal_zoom_value">Гор. масштаб: %1$.2fx</string>
+  <string name="player_sheets_aspect_ratio_vertical_zoom_value">Верт. масштаб: %1$.2fx</string>
+  <string name="player_sheets_aspect_ratio_reset_horizontal_zoom">Сбросить гор. масштаб</string>
+  <string name="player_sheets_aspect_ratio_reset_vertical_zoom">Сбросить верт. масштаб</string>
+  <string name="player_sheets_aspect_ratio_decrease_horizontal_zoom">Уменьшить гор. масштаб</string>
+  <string name="player_sheets_aspect_ratio_increase_horizontal_zoom">Увеличить гор. масштаб</string>
+  <string name="player_sheets_aspect_ratio_decrease_vertical_zoom">Уменьшить верт. масштаб</string>
+  <string name="player_sheets_aspect_ratio_increase_vertical_zoom">Увеличить верт. масштаб</string>
+  <string name="player_sheets_aspect_ratio_reset_advanced_zoom">Сбросить расширенное масштабирование</string>
 </resources>

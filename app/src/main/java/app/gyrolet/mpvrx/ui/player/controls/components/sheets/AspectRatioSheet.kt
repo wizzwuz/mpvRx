@@ -13,16 +13,24 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import app.gyrolet.mpvrx.presentation.components.AppTextField as OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
@@ -41,11 +50,13 @@ import androidx.compose.ui.unit.dp
 import app.gyrolet.mpvrx.R
 import app.gyrolet.mpvrx.presentation.components.PlayerSheet
 import app.gyrolet.mpvrx.presentation.components.PlayerSheetSectionHeader
+import app.gyrolet.mpvrx.ui.components.IconSwitch
 import app.gyrolet.mpvrx.ui.icons.Icon
 import app.gyrolet.mpvrx.ui.icons.Icons
 import app.gyrolet.mpvrx.ui.player.VideoAspect
 import app.gyrolet.mpvrx.ui.player.controls.icon
 import app.gyrolet.mpvrx.ui.theme.spacing
+import kotlin.math.round
 
 data class AspectRatio(
   val label: String,
@@ -59,6 +70,19 @@ fun AspectRatioSheet(
   currentMode: VideoAspect,
   currentRatio: Double?,
   customRatios: List<AspectRatio>,
+  videoZoom: Float,
+  videoPanX: Float,
+  videoPanY: Float,
+  onZoomChange: (Float) -> Unit,
+  onPanXChange: (Float) -> Unit,
+  onPanYChange: (Float) -> Unit,
+  advancedZoomEnabled: Boolean,
+  videoScaleX: Float,
+  videoScaleY: Float,
+  onAdvancedZoomToggle: (Boolean) -> Unit,
+  onScaleXChange: (Float) -> Unit,
+  onScaleYChange: (Float) -> Unit,
+  onResetAdvancedZoom: () -> Unit,
   onSelectMode: (VideoAspect) -> Unit,
   onSelectRatio: (Double) -> Unit,
   onAddCustomRatio: (String, Double) -> Unit,
@@ -164,6 +188,251 @@ fun AspectRatioSheet(
         onAdd = onAddCustomRatio,
         modifier = Modifier.padding(top = MaterialTheme.spacing.medium),
       )
+
+      PlayerSheetSectionHeader(
+        androidx.compose.ui.res.stringResource(
+          app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_manual_zoom_pan_title,
+        ),
+      )
+
+      ListItem(
+        content = {
+          Text(
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_advanced_zoom_toggle,
+            ),
+          )
+        },
+        supportingContent = {
+          Text(
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_advanced_zoom_description,
+            ),
+          )
+        },
+        trailingContent = {
+          IconSwitch(
+            checked = advancedZoomEnabled,
+            onCheckedChange = null,
+          )
+        },
+        modifier =
+          Modifier.clickable {
+            onAdvancedZoomToggle(!advancedZoomEnabled)
+          },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+      )
+
+      if (advancedZoomEnabled) {
+        AdvancedZoomAxisControl(
+          label =
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_horizontal_zoom_value,
+              videoScaleX,
+            ),
+          value = videoScaleX,
+          onValueChange = onScaleXChange,
+          decreaseDescription =
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_decrease_horizontal_zoom,
+            ),
+          increaseDescription =
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_increase_horizontal_zoom,
+            ),
+          resetDescription =
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_reset_horizontal_zoom,
+            ),
+        )
+
+        Spacer(modifier = Modifier.height(MaterialTheme.spacing.small))
+
+        AdvancedZoomAxisControl(
+          label =
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_vertical_zoom_value,
+              videoScaleY,
+            ),
+          value = videoScaleY,
+          onValueChange = onScaleYChange,
+          decreaseDescription =
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_decrease_vertical_zoom,
+            ),
+          increaseDescription =
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_increase_vertical_zoom,
+            ),
+          resetDescription =
+            androidx.compose.ui.res.stringResource(
+              app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_reset_vertical_zoom,
+            ),
+        )
+
+        if (videoScaleX != 1f || videoScaleY != 1f) {
+          Button(
+            onClick = onResetAdvancedZoom,
+            modifier =
+              Modifier
+                .padding(horizontal = 20.dp)
+                .padding(top = MaterialTheme.spacing.small),
+          ) {
+            Text(
+              text =
+                androidx.compose.ui.res.stringResource(
+                  app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_reset_advanced_zoom,
+                ),
+              style = MaterialTheme.typography.labelMedium,
+            )
+          }
+        }
+      }
+
+      // Zoom Slider (when advanced zoom is disabled)
+      if (!advancedZoomEnabled) {
+        Column(
+          modifier =
+            Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 20.dp),
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            val zoomFactor = java.lang.Math.pow(2.0, videoZoom.toDouble())
+            Text(
+              text =
+                androidx.compose.ui.res.stringResource(
+                  app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_zoom_value,
+                  zoomFactor,
+                ),
+              style = MaterialTheme.typography.bodyMedium,
+            )
+
+            if (videoZoom != 0f) {
+              IconButton(
+                onClick = { onZoomChange(0f) },
+                modifier = Modifier.size(24.dp),
+              ) {
+                Icon(
+                  Icons.RoundedFilled.Refresh,
+                  contentDescription =
+                    androidx.compose.ui.res.stringResource(
+                      app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_reset_zoom,
+                    ),
+                  modifier = Modifier.size(16.dp),
+                )
+              }
+            }
+          }
+
+          Slider(
+            value = videoZoom,
+            onValueChange = onZoomChange,
+            valueRange = -1f..3f,
+            modifier = Modifier.fillMaxWidth(),
+          )
+        }
+      }
+
+      Spacer(modifier = Modifier.height(MaterialTheme.spacing.small))
+
+      // Horizontal Pan Slider
+      Column(
+        modifier =
+          Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp),
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Text(
+            text =
+              androidx.compose.ui.res.stringResource(
+                app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_horizontal_offset_value,
+                videoPanX,
+              ),
+            style = MaterialTheme.typography.bodyMedium,
+          )
+
+          if (videoPanX != 0f) {
+            IconButton(
+              onClick = { onPanXChange(0f) },
+              modifier = Modifier.size(24.dp),
+            ) {
+              Icon(
+                Icons.RoundedFilled.Refresh,
+                contentDescription =
+                  androidx.compose.ui.res.stringResource(
+                    app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_reset_pan,
+                  ),
+                modifier = Modifier.size(16.dp),
+              )
+            }
+          }
+        }
+
+        Slider(
+          value = videoPanX,
+          onValueChange = onPanXChange,
+          valueRange = -1f..1f,
+          modifier = Modifier.fillMaxWidth(),
+        )
+      }
+
+      Spacer(modifier = Modifier.height(MaterialTheme.spacing.small))
+
+      // Vertical Pan Slider
+      Column(
+        modifier =
+          Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp),
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Text(
+            text =
+              androidx.compose.ui.res.stringResource(
+                app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_vertical_offset_value,
+                videoPanY,
+              ),
+            style = MaterialTheme.typography.bodyMedium,
+          )
+
+          if (videoPanY != 0f) {
+            IconButton(
+              onClick = { onPanYChange(0f) },
+              modifier = Modifier.size(24.dp),
+            ) {
+              Icon(
+                Icons.RoundedFilled.Refresh,
+                contentDescription =
+                  androidx.compose.ui.res.stringResource(
+                    app.gyrolet.mpvrx.R.string.player_sheets_aspect_ratio_reset_pan,
+                  ),
+                modifier = Modifier.size(16.dp),
+              )
+            }
+          }
+        }
+
+        Slider(
+          value = videoPanY,
+          onValueChange = onPanYChange,
+          valueRange = -1f..1f,
+          modifier = Modifier.fillMaxWidth(),
+        )
+      }
     }
   }
 }
@@ -315,3 +584,87 @@ private fun calculateRatio(
 }
 
 private fun abs(value: Double): Double = if (value < 0) -value else value
+
+private const val ADVANCED_ZOOM_MIN = 0.5f
+private const val ADVANCED_ZOOM_MAX = 2.0f
+private const val ADVANCED_ZOOM_STEP = 0.05f
+
+@Composable
+private fun AdvancedZoomAxisControl(
+  label: String,
+  value: Float,
+  onValueChange: (Float) -> Unit,
+  decreaseDescription: String,
+  increaseDescription: String,
+  resetDescription: String,
+  modifier: Modifier = Modifier,
+) {
+  Column(
+    modifier =
+      modifier
+        .fillMaxWidth()
+        .padding(horizontal = 20.dp),
+  ) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Text(text = label, style = MaterialTheme.typography.bodyMedium)
+
+      if (value != 1f) {
+        IconButton(
+          onClick = { onValueChange(1f) },
+          modifier = Modifier.size(24.dp),
+        ) {
+          Icon(
+            Icons.RoundedFilled.Refresh,
+            contentDescription = resetDescription,
+            modifier = Modifier.size(16.dp),
+          )
+        }
+      }
+    }
+
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.small),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      FilledTonalIconButton(
+        onClick = {
+          val rounded = (round((value - ADVANCED_ZOOM_STEP) * 100f) / 100f).coerceIn(ADVANCED_ZOOM_MIN, ADVANCED_ZOOM_MAX)
+          onValueChange(rounded)
+        },
+        modifier = Modifier.size(36.dp),
+      ) {
+        Icon(
+          Icons.RoundedFilled.Remove,
+          contentDescription = decreaseDescription,
+          modifier = Modifier.size(18.dp),
+        )
+      }
+
+      Slider(
+        value = value,
+        onValueChange = onValueChange,
+        valueRange = ADVANCED_ZOOM_MIN..ADVANCED_ZOOM_MAX,
+        modifier = Modifier.weight(1f),
+      )
+
+      FilledTonalIconButton(
+        onClick = {
+          val rounded = (round((value + ADVANCED_ZOOM_STEP) * 100f) / 100f).coerceIn(ADVANCED_ZOOM_MIN, ADVANCED_ZOOM_MAX)
+          onValueChange(rounded)
+        },
+        modifier = Modifier.size(36.dp),
+      ) {
+        Icon(
+          Icons.RoundedFilled.Add,
+          contentDescription = increaseDescription,
+          modifier = Modifier.size(18.dp),
+        )
+      }
+    }
+  }
+}

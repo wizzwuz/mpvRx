@@ -3316,4 +3316,22 @@
   <string name="pref_player_remember_video_zoom_summary">Restore zoom and pan positions automatically for new videos</string>
   <string name="delete_confirmation_message">Are you sure you want to permanently delete this video? This action cannot be undone.</string>
   <string name="media_info_no_file_provided">No local file available for Media Info</string>
+  <!-- Aspect ratio manual zoom and pan -->
+  <string name="player_sheets_aspect_ratio_manual_zoom_pan_title">Manual Zoom &amp; Pan (Camera Offset)</string>
+  <string name="player_sheets_aspect_ratio_zoom_value">Zoom: %1$.2fx</string>
+  <string name="player_sheets_aspect_ratio_reset_zoom">Reset Zoom</string>
+  <string name="player_sheets_aspect_ratio_horizontal_offset_value">Horizontal Offset: %1$.3f</string>
+  <string name="player_sheets_aspect_ratio_vertical_offset_value">Vertical Offset: %1$.3f</string>
+  <string name="player_sheets_aspect_ratio_reset_pan">Reset Pan</string>
+  <string name="player_sheets_aspect_ratio_advanced_zoom_toggle">Advanced Zoom</string>
+  <string name="player_sheets_aspect_ratio_advanced_zoom_description">Independently stretch or crop the horizontal and vertical axes, useful for removing black bars</string>
+  <string name="player_sheets_aspect_ratio_horizontal_zoom_value">Horizontal Zoom: %1$.2fx</string>
+  <string name="player_sheets_aspect_ratio_vertical_zoom_value">Vertical Zoom: %1$.2fx</string>
+  <string name="player_sheets_aspect_ratio_reset_horizontal_zoom">Reset horizontal zoom</string>
+  <string name="player_sheets_aspect_ratio_reset_vertical_zoom">Reset vertical zoom</string>
+  <string name="player_sheets_aspect_ratio_decrease_horizontal_zoom">Decrease horizontal zoom</string>
+  <string name="player_sheets_aspect_ratio_increase_horizontal_zoom">Increase horizontal zoom</string>
+  <string name="player_sheets_aspect_ratio_decrease_vertical_zoom">Decrease vertical zoom</string>
+  <string name="player_sheets_aspect_ratio_increase_vertical_zoom">Increase vertical zoom</string>
+  <string name="player_sheets_aspect_ratio_reset_advanced_zoom">Reset Advanced Zoom</string>
 </resources>

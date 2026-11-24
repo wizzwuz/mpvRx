@@ -241,7 +241,10 @@ fun GestureHandler(
   }
 
   fun releaseGesture(owner: GestureOwner) {
-    if (gestureOwner == owner) gestureOwner = null
+    if (gestureOwner == owner) {
+      gestureOwner = null
+      gestureClaimedForPointer = false
+    }
   }
 
   val currentVolumePercent by viewModel.currentVolumePercent.collectAsState()
@@ -290,6 +293,10 @@ fun GestureHandler(
     region: String,
     inExclusionZone: Boolean,
   ) {
+    if (anyPanelShown) {
+      viewModel.pauseUnpause()
+      return
+    }
     if (areControlsLocked) {
       viewModel.showControls()
       return
@@ -600,7 +607,7 @@ fun GestureHandler(
                 }
 
                 // If controls are currently shown, tapping outside controls immediately hides them
-                if (controlsShown && !isDrag && !wasConsumedByTapGesture && !wasOwnedByAnotherGesture) {
+                if (controlsShown && !anyPanelShown && !isDrag && !wasConsumedByTapGesture) {
                   viewModel.hideControls()
                   singleTapJob?.cancel()
                   singleTapJob = null
@@ -618,8 +625,7 @@ fun GestureHandler(
                 if (
                   !isDrag &&
                   !wasConsumedByTapGesture &&
-                  !wasOwnedByAnotherGesture &&
-                  !gestureClaimedForPointer
+                  !longPressTriggeredDuringTouch
                 ) {
                   val timeSinceLastTap = downTime - lastTapTime
                   val positionChange =
@@ -754,10 +760,11 @@ fun GestureHandler(
                     wasConsumedByTapGesture = true
                     pointer.consume()
 
-                    val exclusionZoneHeight = size.height * 0.25f // 25% from top and bottom
+                    val topExclusionZonePx = max(topGestureDeadZonePx, with(density) { 48.dp.toPx() })
+                    val bottomExclusionZonePx = max(bottomGestureDeadZonePx, with(density) { 48.dp.toPx() })
                     val inExclusionZone =
-                      downPosition.y < exclusionZoneHeight ||
-                        downPosition.y > (size.height - exclusionZoneHeight)
+                      downPosition.y < topExclusionZonePx ||
+                        downPosition.y > (size.height - bottomExclusionZonePx)
 
                     pendingTapInExclusionZone = inExclusionZone
 

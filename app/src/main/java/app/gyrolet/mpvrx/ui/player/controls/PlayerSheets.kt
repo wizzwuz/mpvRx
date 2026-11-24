@@ -511,6 +511,12 @@ fun PlayerSheets(
       val customRatiosSet by playerPreferences.customAspectRatios.collectAsState()
       val currentRatio by viewModel.currentAspectRatio.composeCollectAsState()
       val currentMode by viewModel.videoAspect.composeCollectAsState()
+      val videoZoom by viewModel.videoZoom.composeCollectAsState()
+      val videoPanX by viewModel.videoPanX.composeCollectAsState()
+      val videoPanY by viewModel.videoPanY.composeCollectAsState()
+      val advancedZoomEnabled by viewModel.advancedZoomEnabled.composeCollectAsState()
+      val videoScaleX by viewModel.videoScaleX.composeCollectAsState()
+      val videoScaleY by viewModel.videoScaleY.composeCollectAsState()
       val customRatios =
         customRatiosSet.mapNotNull { str ->
           val parts = str.split("|")
@@ -529,6 +535,19 @@ fun PlayerSheets(
         currentMode = currentMode,
         currentRatio = currentRatio,
         customRatios = customRatios,
+        videoZoom = videoZoom,
+        videoPanX = videoPanX,
+        videoPanY = videoPanY,
+        onZoomChange = viewModel::setVideoZoom,
+        onPanXChange = viewModel::setVideoPanX,
+        onPanYChange = viewModel::setVideoPanY,
+        advancedZoomEnabled = advancedZoomEnabled,
+        videoScaleX = videoScaleX,
+        videoScaleY = videoScaleY,
+        onAdvancedZoomToggle = viewModel::setAdvancedZoomEnabled,
+        onScaleXChange = viewModel::setVideoScaleX,
+        onScaleYChange = viewModel::setVideoScaleY,
+        onResetAdvancedZoom = viewModel::resetAdvancedZoom,
         onSelectMode = { viewModel.changeVideoAspect(it) },
         onSelectRatio = { viewModel.setCustomAspectRatio(it) },
         onAddCustomRatio = { label, ratio ->
