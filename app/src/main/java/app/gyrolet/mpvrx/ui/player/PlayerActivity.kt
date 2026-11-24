@@ -1558,18 +1558,15 @@ class PlayerActivity :
     val viewScale = if (followVideo) videoZoomMultiplier(zoom) else 1f
     binding.player.scaleX = viewScale
     binding.player.scaleY = viewScale
-    binding.player.translationX = if (followVideo) panX else 0f
-    binding.player.translationY = if (followVideo) panY else 0f
+    val playerW = player.width.toFloat().takeIf { it > 0f } ?: binding.player.width.toFloat()
+    val playerH = player.height.toFloat().takeIf { it > 0f } ?: binding.player.height.toFloat()
+    binding.player.translationX = if (followVideo) panX * playerW else 0f
+    binding.player.translationY = if (followVideo) panY * playerH else 0f
     if (!canIssueMpvCommands()) return
     val (mpvPanX, mpvPanY) = if (followVideo) {
       0f to 0f
     } else {
-      val croppedAspect = PlaybackSession.propString["video-crop"].value
-        ?.takeIf { it.isNotEmpty() }
-        ?.let { VideoAspectGeometry.currentEffectiveDisplayAspect() }
-      val aspect = (croppedAspect ?: PlaybackSession.getPropertyDouble("video-out-params/aspect")
-        ?: PlaybackSession.getPropertyDouble("video-params/aspect") ?: 0.0).toFloat()
-      videoPanFractions(player.width.toFloat(), player.height.toFloat(), aspect, zoom, panX, panY)
+      panX to panY
     }
     PlaybackSession.setPropertyFloat("video-zoom", if (followVideo) 0f else zoom)
     PlaybackSession.setPropertyFloat("video-pan-x", mpvPanX)

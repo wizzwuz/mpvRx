@@ -40,7 +40,7 @@ internal fun nearestVideoZoomStop(zoom: Float, stops: List<Float>, heldStop: Flo
   return stops.minByOrNull { abs(zoom - it) }?.takeIf { abs(zoom - it) <= ZOOM_SNAP_ENTER }
 }
 
-/** mpv pan values are fractions of the scaled video, while touch gestures use pixels. */
+/** mpv pan values are fractional offsets in -1f..1f. */
 fun videoPanFractions(
   width: Float,
   height: Float,
@@ -48,10 +48,4 @@ fun videoPanFractions(
   zoom: Float,
   panX: Float,
   panY: Float,
-): Pair<Float, Float> {
-  if (width <= 0f || height <= 0f || aspect <= 0f) return 0f to 0f
-  val fittedWidth = minOf(width, height * aspect)
-  val fittedHeight = minOf(height, width / aspect)
-  val scale = videoZoomMultiplier(zoom)
-  return panX / (fittedWidth * scale) to panY / (fittedHeight * scale)
-}
+): Pair<Float, Float> = panX to panY

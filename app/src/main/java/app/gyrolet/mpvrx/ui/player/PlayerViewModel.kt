@@ -6496,10 +6496,11 @@ fun restartFromBeginning() {
     x: Float,
     y: Float,
   ) {
-    PlaybackSession.setVideoTransformPan(
-      x = if (MpvConfigOverridePolicy.isOwnedByMpvConf("video-pan-x")) 0f else x,
-      y = if (MpvConfigOverridePolicy.isOwnedByMpvConf("video-pan-y")) 0f else y,
-    )
+    val finalX = if (MpvConfigOverridePolicy.isOwnedByMpvConf("video-pan-x")) 0f else x
+    val finalY = if (MpvConfigOverridePolicy.isOwnedByMpvConf("video-pan-y")) 0f else y
+    PlaybackSession.setVideoTransformPan(finalX, finalY)
+    PlaybackSession.setPropertyDouble("video-pan-x", finalX.toDouble())
+    PlaybackSession.setPropertyDouble("video-pan-y", finalY.toDouble())
   }
 
   fun resetVideoPan() {
